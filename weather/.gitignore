@@ -1,4 +1,6 @@
+/Cargo.lock
 /target
 .idea
+*.code-workspace
 weather_data
 ,*

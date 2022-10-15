@@ -1,0 +1,30 @@
+!Folder
+path: g:\testcase
+size: 0
+created: 1661797208
+modified: 1661812226
+children:
+- !Folder
+  path: g:\testcase\folder1
+  size: 0
+  created: 1661797239
+  modified: 1661812215
+  children:
+  - !Folder
+    path: g:\testcase\folder1\folder2
+    size: 0
+    created: 1661812215
+    modified: 1662394938
+    children: []
+- !Folder
+  path: g:\testcase\folder3
+  size: 0
+  created: 1661797244
+  modified: 1662394963
+  children: []
+- !File
+  path: g:\testcase\some_file.dat
+  is_symlink: false
+  size: 0
+  created: 1661801822
+  modified: 1661801822

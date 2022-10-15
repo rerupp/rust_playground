@@ -7,14 +7,15 @@
 //! Currently only 1 location can reported at a time however the command does
 //! support case-insensitive searching.
 //!
+use super::ReportWriter;
 use chrono::prelude::*;
 use clap::Args;
-use crate::cli::ReportWriter;
+use std::result;
 
-use crate::domain::{DailyHistoryQuery, HistoryRange, LocationDailyHistories, LocationQuery, WeatherData};
+use super::lib::{DailyHistoryQuery, HistoryRange, LocationDailyHistories, LocationQuery, WeatherData};
 
 // use super::{CliError, CliResult, ReportGenerator, util};
-use super::{CliError, CliResult, ReportGenerator};
+use super::{Error as CliError, ReportGenerator, Result as CliResult};
 
 /// The CLI flags and arguments specific to the report history subcommand.
 #[derive(Args, Debug)]
@@ -84,16 +85,23 @@ pub struct CommandArgs {
 
 /// The implementation for report history command flags.
 impl CommandArgs {
-
     /// Returns true if the `temp` flag is supplied, `all` has been selected, or no report flags
     /// supplied.
-    fn is_temp(&self) -> bool { self.temp || self.all || !(self.max || self.cnd || self.sum) }
+    fn is_temp(&self) -> bool {
+        self.temp || self.all || !(self.max || self.cnd || self.sum)
+    }
     /// Returns true if the `max` flag or `all` flag has been supplied.
-    fn is_max(&self) -> bool { self.max || self.all }
+    fn is_max(&self) -> bool {
+        self.max || self.all
+    }
     /// Returns true if the `cnd` flag or `all` flag has been supplied.
-    fn is_cnd(&self) -> bool { self.cnd || self.all }
+    fn is_cnd(&self) -> bool {
+        self.cnd || self.all
+    }
     /// Returns true if the `sum` flag or `all` flag has been supplied.
-    fn is_sum(&self) -> bool { self.sum || self.all }
+    fn is_sum(&self) -> bool {
+        self.sum || self.all
+    }
 }
 
 /// The contents of the report history command.
@@ -135,7 +143,8 @@ impl ReportHistory {
             history_range: HistoryRange::new(lower, upper),
         };
         // println!("{:?} {:?}" query, history_query);
-        weather_data.get_daily_history(query, history_query)
+        let location_daily_histories = weather_data.get_daily_history(query, history_query)?;
+        Ok(location_daily_histories)
     }
 }
 
@@ -182,7 +191,7 @@ impl ReportGenerator for ReportHistory {
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
     fn csv_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter) -> CliResult<()> {
-            csv::output(self.get_daily_histories(weather_data)?, &self.args, report_writer)
+        csv::output(self.get_daily_histories(weather_data)?, &self.args, report_writer)
     }
 }
 
@@ -194,14 +203,14 @@ impl ReportGenerator for ReportHistory {
 /// # Arguments
 ///
 /// * `location` - the location string provided on the command line.
-fn validate_location(location: &str) -> Result<(), String> {
+fn validate_location(location: &str) -> result::Result<(), String> {
     if location.trim().len() != location.len() {
         Err("The location name cannot have leading or trailing spaces".to_string())
     } else {
         // just in case someone forgot to give a location, check to see if it's a date
         match parse_date(location) {
             Err(_) => Ok(()),
-            _ => Err(format!("The location appears to be a start date..."))
+            _ => Err(format!("The location appears to be a start date...")),
         }
     }
 }
@@ -218,7 +227,7 @@ fn validate_location(location: &str) -> Result<(), String> {
 fn validate_date_string(date_str: &str) -> Result<(), String> {
     match parse_date(&date_str) {
         Ok(_) => Ok(()),
-        Err(error) => Err(error.to_string())
+        Err(error) => Err(format!("{error}")),
     }
 }
 
@@ -244,9 +253,7 @@ fn parse_date(date_str: &str) -> CliResult<Date<Utc>> {
             return Ok(Date::<Utc>::from_utc(naive_date, Utc));
         }
     }
-    Err(CliError::new(
-        &format!("'{}' pattern must be 'YYYY-MM-DD', 'MM-DD-YYYY', or 'MMM-DD-YYYY'!!!", date_str)
-    ))
+    Err(CliError::from(format!("'{}' pattern must be 'YYYY-MM-DD', 'MM-DD-YYYY', or 'MMM-DD-YYYY'!!!", date_str)))
 }
 
 #[cfg(test)]
@@ -339,7 +346,9 @@ mod tests {
 mod text {
     use chrono_tz::*;
 
-    use crate::cli::text_reports::{Alignment, ColumnContent, ColumnProperty, fmt_float, fmt_yyyymmdd, ReportBuilder, ReportColumns};
+    use toolslib::text::{
+        fmt_float, fmt_isodate, Alignment, Column, ColumnDescription, ColumnDescriptions, Columns, Report, Row, RowDescription, RowID,
+    };
 
     use super::*;
 
@@ -353,184 +362,135 @@ mod text {
     /// * `report_args` - The report arguments to allow selection of the report details.
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
-    pub fn output(location_daily_histories: LocationDailyHistories,
-                  report_args: &CommandArgs,
-                  report_writer: &ReportWriter) -> CliResult<()>
-    {
-        let mut report_columns = ReportColumns::new(vec![
-            ColumnProperty::new(Alignment::Center),
-        ]);
+    pub fn output(
+        location_daily_histories: LocationDailyHistories,
+        report_args: &CommandArgs,
+        report_writer: &ReportWriter,
+    ) -> CliResult<()> {
+        let mut row_description = RowDescription::from(ColumnDescription::from(Alignment::Center));
         if report_args.is_temp() {
-            report_columns.add_columns(vec![
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-            ]);
+            row_description.add_columns(ColumnDescriptions::from(vec![
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+            ]));
         }
         if report_args.is_max() {
-            report_columns.add_columns(vec![
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-            ]);
+            row_description.add_columns(ColumnDescriptions::from(vec![
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+            ]));
         }
         if report_args.is_cnd() {
-            report_columns.add_columns(vec![
-                ColumnProperty::new(Alignment::Right),
-                ColumnProperty::new(Alignment::Right),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-            ]);
+            row_description.add_columns(ColumnDescriptions::from(vec![
+                Alignment::Right,
+                Alignment::Right,
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+            ]));
         }
         if report_args.is_sum() {
-            report_columns.add_columns(vec![
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Center),
-                ColumnProperty::new(Alignment::Left),
-            ]);
+            row_description.add_columns(ColumnDescriptions::from(vec![
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+                Alignment::Center,
+                // summary will always be the last column and it can be empty or it can be a
+                // long string so don't do any alignment
+                Alignment::AsIs,
+            ]));
         }
 
-        let mut report_builder = ReportBuilder::new(report_columns);
-        let mut header_builder = ReportBuilder::header();
-        header_builder.add_content(ColumnContent::new(""));
+        let mut report = Report::from(row_description);
+        let mut row = Row::from(RowID::Header).with_column(Column::from(String::default()));
         if report_args.is_temp() {
-            header_builder.add_contents(vec![
-                ColumnContent::new("High"),
-                ColumnContent::new("High"),
-                ColumnContent::new("Low"),
-                ColumnContent::new("Low"),
-            ]);
+            row.add_columns(Columns::from(vec!["High", "High", "Low", "Low"]));
         }
         if report_args.is_max() {
-            header_builder.add_contents(vec![
-                ColumnContent::new("Maximum"),
-                ColumnContent::new("Maximum"),
-                ColumnContent::new("Minimum"),
-                ColumnContent::new("Minimum"),
-            ]);
+            row.add_columns(Columns::from(vec!["Maximum", "Maximum", "Minimum", "Minimum"]));
         }
         if report_args.is_cnd() {
-            header_builder.add_contents(vec![
-                ColumnContent::new("Wind"),
-                ColumnContent::new("Wind"),
-                ColumnContent::new("Wind"),
-                ColumnContent::new("Wind"),
-                ColumnContent::new("Cloud"),
-                ColumnContent::new("UV"),
-                ColumnContent::new("UV"),
-            ]);
+            row.add_columns(Columns::from(vec!["Wind", "Wind", "Wind", "Wind", "Cloud", "UV", "UV"]));
         }
         if report_args.is_sum() {
-            header_builder.add_contents(vec![
-                ColumnContent::new(""),
-                ColumnContent::new(""),
-                ColumnContent::new("Moon"),
-                ColumnContent::new(""),
-                ColumnContent::new("Dew"),
-                ColumnContent::new("Summary"),
-            ]);
+            row.add_columns(Columns::from(vec!["", "", "Moon", "", "Dew", ""]));
         }
-        report_builder.add_contents(header_builder)?;
+        report.add(row)?;
 
-        let mut header_builder = ReportBuilder::header();
-        header_builder.add_content(ColumnContent::new("Date"));
+        let mut row = Row::from(RowID::Header).with_column(Column::from("Date"));
+        // header_builder.add_content(ColumnContent::new("Date"));
         if report_args.is_temp() {
-            header_builder.add_contents(vec![
-                ColumnContent::new("Temperature"),
-                ColumnContent::new("Temperature TOD"),
-                ColumnContent::new("Temperature"),
-                ColumnContent::new("Temperature TOD"),
-            ]);
+            row.add_columns(Columns::from(vec!["Temperature", "Temperature TOD", "Temperature", "Temperature TOD"]));
         }
         if report_args.is_max() {
-            header_builder.add_contents(vec![
-                ColumnContent::new("Temperature"),
-                ColumnContent::new("Temperature TOD"),
-                ColumnContent::new("Temperature"),
-                ColumnContent::new("Temperature TOD"),
-            ]);
+            row.add_columns(Columns::from(vec!["Temperature", "Temperature TOD", "Temperature", "Temperature TOD"]));
         }
         if report_args.is_cnd() {
-            header_builder.add_contents(vec![
-                ColumnContent::new("Speed"),
-                ColumnContent::new("Gust"),
-                ColumnContent::new("Gust TOD"),
-                ColumnContent::new("Bearing"),
-                ColumnContent::new("Cover"),
-                ColumnContent::new("Index"),
-                ColumnContent::new("Index TOD"),
-            ]);
+            row.add_columns(Columns::from(vec!["Speed", "Gust", "Gust TOD", "Bearing", "Cover", "Index", "Index TOD"]));
         }
         if report_args.is_sum() {
-            header_builder.add_contents(vec![
-                ColumnContent::new("Sunrise"),
-                ColumnContent::new("Sunset"),
-                ColumnContent::new("Phase"),
-                ColumnContent::new("Humidity"),
-                ColumnContent::new("Point"),
-                ColumnContent::new("Summary"),
-            ]);
+            row.add_columns(Columns::from(vec!["Sunrise", "Sunset", "Phase", "Humidity", "Point", "Summary"]));
         }
-        report_builder.add_contents(header_builder)?;
-        report_builder.add_separator('-');
+        // report_builder.add_contents(header_builder)?;
+        // report_builder.add_separator('-');
+        report.add(row)?;
+        report.add(Row::from(RowID::Separator('-')))?;
         if let Some((location, daily_histories)) = location_daily_histories {
             let tz: Tz = location.tz.parse().unwrap();
             for daily_history in daily_histories.daily_histories {
-                let mut detail_builder = ReportBuilder::detail();
-                detail_builder.add_content(ColumnContent::new(&fmt_yyyymmdd(&daily_history.date)));
+                let mut row = Row::from(RowID::Detail).with_column(Column::from(fmt_isodate(&daily_history.date)));
                 if report_args.is_temp() {
-                    detail_builder.add_contents(vec![
-                        ColumnContent::new(&fmt_temperature(&daily_history.temperature_high)),
-                        ColumnContent::new(&fmt_hhmm(&daily_history.temperature_high_time, &tz)),
-                        ColumnContent::new(&fmt_temperature(&daily_history.temperature_low)),
-                        ColumnContent::new(&fmt_hhmm(&daily_history.temperature_low_time, &tz)),
-                    ]);
+                    row.add_columns(Columns::from(vec![
+                        fmt_temperature(&daily_history.temperature_high),
+                        fmt_hhmm(&daily_history.temperature_high_time, &tz),
+                        fmt_temperature(&daily_history.temperature_low),
+                        fmt_hhmm(&daily_history.temperature_low_time, &tz),
+                    ]));
                 }
                 if report_args.is_max() {
-                    detail_builder.add_contents(vec![
-                        ColumnContent::new(&fmt_temperature(&daily_history.temperature_max)),
-                        ColumnContent::new(&fmt_hhmm(&daily_history.temperature_max_time, &tz)),
-                        ColumnContent::new(&fmt_temperature(&daily_history.temperature_min)),
-                        ColumnContent::new(&fmt_hhmm(&daily_history.temperature_min_time, &tz)),
-                    ]);
+                    row.add_columns(Columns::from(vec![
+                        fmt_temperature(&daily_history.temperature_max),
+                        fmt_hhmm(&daily_history.temperature_max_time, &tz),
+                        fmt_temperature(&daily_history.temperature_min),
+                        fmt_hhmm(&daily_history.temperature_min_time, &tz),
+                    ]));
                 }
                 if report_args.is_cnd() {
-                    detail_builder.add_contents(vec![
-                        ColumnContent::new(&fmt_float(&daily_history.wind_speed, 1)),
-                        ColumnContent::new(&fmt_float(&daily_history.wind_gust, 1)),
-                        ColumnContent::new(&fmt_hhmm(&daily_history.wind_gust_time, &tz)),
-                        ColumnContent::new(fmt_wind_bearing(&daily_history.wind_bearing)),
-                        ColumnContent::new(&fmt_percent(&daily_history.cloud_cover)),
-                        ColumnContent::new(fmt_uv_index(&daily_history.uv_index)),
-                        ColumnContent::new(&fmt_hhmm(&daily_history.uv_index_time, &tz)),
-                    ]);
+                    row.add_columns(Columns::from(vec![
+                        fmt_float(&daily_history.wind_speed, 1),
+                        fmt_float(&daily_history.wind_gust, 1),
+                        fmt_hhmm(&daily_history.wind_gust_time, &tz),
+                        String::from(fmt_wind_bearing(&daily_history.wind_bearing)),
+                        fmt_percent(&daily_history.cloud_cover),
+                        String::from(fmt_uv_index(&daily_history.uv_index)),
+                        fmt_hhmm(&daily_history.uv_index_time, &tz),
+                    ]));
                 }
                 if report_args.is_sum() {
-                    detail_builder.add_contents(vec![
-                        ColumnContent::new(&fmt_hhmm(&daily_history.sunrise_time, &tz)),
-                        ColumnContent::new(&fmt_hhmm(&daily_history.sunset_time, &tz)),
-                        ColumnContent::new(&fmt_moon_phase(&daily_history.moon_phase)),
-                        ColumnContent::new(&fmt_percent(&daily_history.humidity)),
-                        ColumnContent::new(&fmt_temperature(&daily_history.dew_point)),
-                        ColumnContent::new(if let Some(summary) = &daily_history.summary {
-                            &summary
-                        } else {
-                            ""
-                        }),
-                    ]);
+                    row.add_columns(Columns::from(vec![
+                        fmt_hhmm(&daily_history.sunrise_time, &tz),
+                        fmt_hhmm(&daily_history.sunset_time, &tz),
+                        String::from(fmt_moon_phase(&daily_history.moon_phase)),
+                        fmt_percent(&daily_history.humidity),
+                        fmt_temperature(&daily_history.dew_point),
+                        match &daily_history.summary {
+                            Some(text) => text.clone(),
+                            _ => String::default(),
+                        },
+                    ]));
                 }
-                report_builder.add_contents(detail_builder)?;
+                report.add(row)?;
             }
         }
-        report_builder.output(report_writer)
+        report.generate(report_writer.create()?)?;
+        Ok(())
     }
 
     /// Returns a compass bearing as a human readable direction.
@@ -558,10 +518,7 @@ mod text {
     pub fn fmt_wind_bearing(bearing_option: &Option<i64>) -> &'static str {
         if let Some(bearing) = bearing_option {
             static BEARINGS: [&'static str; 16] = [
-                "N", "NNE", "NE", "ENE",
-                "E", "ESE", "SE", "SSE",
-                "S", "SSW", "SW", "WSW",
-                "W", "WNW", "NW", "NNW"
+                "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW",
             ];
             let index = ((*bearing as f64 / 22.5) + 0.5) as usize % 16;
             BEARINGS[index]
@@ -644,7 +601,7 @@ mod text {
                     3 | 4 | 5 => "moderate",
                     6 | 7 => "high",
                     8 | 9 | 10 => "very high",
-                    _ => "extreme"
+                    _ => "extreme",
                 };
             }
         }
@@ -708,23 +665,57 @@ mod text {
 
         #[test]
         fn wind_bearing() {
-            for bearing in 0..=11 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "N"); }
-            for bearing in 12..=33 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "NNE"); }
-            for bearing in 34..=56 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "NE"); }
-            for bearing in 57..=78 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "ENE"); }
-            for bearing in 79..=101 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "E"); }
-            for bearing in 102..=123 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "ESE"); }
-            for bearing in 124..=146 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "SE"); }
-            for bearing in 147..=168 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "SSE"); }
-            for bearing in 169..=191 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "S"); }
-            for bearing in 192..=213 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "SSW"); }
-            for bearing in 214..=236 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "SW"); }
-            for bearing in 237..=258 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "WSW"); }
-            for bearing in 259..=281 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "W"); }
-            for bearing in 282..=303 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "WNW"); }
-            for bearing in 304..=326 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "NW"); }
-            for bearing in 327..=348 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "NNW"); }
-            for bearing in 349..=361 { assert_eq!(fmt_wind_bearing(&Some(bearing)), "N"); }
+            for bearing in 0..=11 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "N");
+            }
+            for bearing in 12..=33 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "NNE");
+            }
+            for bearing in 34..=56 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "NE");
+            }
+            for bearing in 57..=78 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "ENE");
+            }
+            for bearing in 79..=101 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "E");
+            }
+            for bearing in 102..=123 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "ESE");
+            }
+            for bearing in 124..=146 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "SE");
+            }
+            for bearing in 147..=168 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "SSE");
+            }
+            for bearing in 169..=191 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "S");
+            }
+            for bearing in 192..=213 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "SSW");
+            }
+            for bearing in 214..=236 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "SW");
+            }
+            for bearing in 237..=258 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "WSW");
+            }
+            for bearing in 259..=281 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "W");
+            }
+            for bearing in 282..=303 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "WNW");
+            }
+            for bearing in 304..=326 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "NW");
+            }
+            for bearing in 327..=348 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "NNW");
+            }
+            for bearing in 349..=361 {
+                assert_eq!(fmt_wind_bearing(&Some(bearing)), "N");
+            }
         }
 
         #[test]
@@ -792,10 +783,10 @@ mod text {
 ///
 mod json {
     use chrono_tz::*;
-    use serde_json::{json, to_string, to_string_pretty, Value};
     use serde_json::map::Map;
+    use serde_json::{json, to_string, to_string_pretty, Value};
+    use toolslib::text::fmt_isodate;
 
-    use crate::cli::text_reports::fmt_yyyymmdd;
 
     use super::*;
 
@@ -809,20 +800,19 @@ mod json {
     /// * `report_args` - The report arguments to allow selection of the report details.
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
-    pub fn output(location_daily_histories: LocationDailyHistories,
-                  report_args: &CommandArgs,
-                  report_writer: &ReportWriter,
-                  pretty: bool) -> CliResult<()>
-    {
+    pub fn output(
+        location_daily_histories: LocationDailyHistories,
+        report_args: &CommandArgs,
+        report_writer: &ReportWriter,
+        pretty: bool,
+    ) -> CliResult<()> {
         if let Some((location, daily_histories)) = location_daily_histories {
             let mut histories: Vec<Map<String, Value>> = vec![];
             let tz: Tz = location.tz.parse().unwrap();
             for daily_history in daily_histories.daily_histories {
                 let mut history = Map::new();
-                let mut add = |key: &str, value: Value| {
-                    history.insert(key.to_string(), value)
-                };
-                add("date", json!(fmt_yyyymmdd(&daily_history.date)));
+                let mut add = |key: &str, value: Value| history.insert(key.to_string(), value);
+                add("date", json!(fmt_isodate(&daily_history.date)));
                 if report_args.is_temp() {
                     add("temperatureHigh", float_value(&daily_history.temperature_high));
                     add("temperatureHighTime", datetime_value(&daily_history.temperature_high_time, &tz));
@@ -892,7 +882,7 @@ mod json {
                 let dt: DateTime<Tz> = tz.timestamp(*timestamp, 0);
                 let iso8601 = dt.to_rfc3339_opts(SecondsFormat::Secs, true);
                 json!(iso8601)
-            },
+            }
             None => Value::Null,
         }
     }
@@ -909,7 +899,7 @@ mod json {
     fn string_value(option: &Option<String>) -> Value {
         match option {
             Some(string) => json!(string),
-            None => Value::Null
+            None => Value::Null,
         }
     }
 
@@ -978,12 +968,12 @@ mod json {
 /// This module utilizes the `csv` dependency to generate reports.
 ///
 mod csv {
+    use crate::cli::ReportWriter;
     use chrono::prelude::*;
     use chrono_tz::*;
     use csv::Writer;
-    use crate::cli::ReportWriter;
 
-    use crate::cli::text_reports::fmt_yyyymmdd;
+    use toolslib::text::fmt_isodate;
 
     use super::{CliResult, CommandArgs, DateTime, LocationDailyHistories, SecondsFormat};
 
@@ -997,10 +987,11 @@ mod csv {
     /// * `report_args` - The report arguments to allow selection of the report details.
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
-    pub fn output(location_daily_histories: LocationDailyHistories,
-                  report_args: &CommandArgs,
-                  report_writer: &ReportWriter) -> CliResult<()>
-    {
+    pub fn output(
+        location_daily_histories: LocationDailyHistories,
+        report_args: &CommandArgs,
+        report_writer: &ReportWriter,
+    ) -> CliResult<()> {
         let mut writer = Writer::from_writer(report_writer.create()?);
         let mut labels: Vec<&str> = vec!["date"];
         if report_args.is_temp() {
@@ -1036,7 +1027,7 @@ mod csv {
         if let Some((location, daily_histories)) = location_daily_histories {
             let tz: Tz = location.tz.parse().unwrap();
             for daily_history in daily_histories.daily_histories {
-                let mut history = vec![fmt_yyyymmdd(&daily_history.date)];
+                let mut history = vec![fmt_isodate(&daily_history.date)];
                 if report_args.is_temp() {
                     history.push(float_value(&daily_history.temperature_high));
                     history.push(datetime_value(&daily_history.temperature_high_time, &tz));
@@ -1098,7 +1089,7 @@ mod csv {
             Some(timestamp) => {
                 let dt: DateTime<Tz> = tz.timestamp(*timestamp, 0);
                 dt.to_rfc3339_opts(SecondsFormat::Secs, true)
-            },
+            }
             None => "".to_string(),
         }
     }

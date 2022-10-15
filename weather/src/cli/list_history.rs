@@ -9,10 +9,10 @@
 //!
 use clap::Args;
 
-use crate::cli::ReportWriter;
-use crate::domain::{LocationHistoryDates, LocationQuery, WeatherData};
+use super::lib::{LocationHistoryDates, LocationQuery, WeatherData};
+use super::ReportWriter;
 
-use super::{CliResult, ReportGenerator};
+use super::{ReportGenerator, Result as CliResult};
 
 #[derive(Args, Debug)]
 /// The command arguments for the list history command.
@@ -102,7 +102,8 @@ impl ReportGenerator for ListHistory {
 /// This module utilizes the `text_reports` module to generate reports.
 ///
 mod text {
-    use crate::cli::text_reports::{Alignment, ColumnContent, ColumnProperty, ReportBuilder, ReportColumns};
+    // use toolslib::text::{Alignment, Column, ColumnDescriptions, Columns, Report, ReportWriter, Row, RowDescription, RowID};
+    use toolslib::text::{Alignment, Column, Columns, Report, Row, RowID};
 
     use super::*;
 
@@ -116,23 +117,20 @@ mod text {
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
     pub fn output(location_history_dates: LocationHistoryDates, report_writer: &ReportWriter) -> CliResult<()> {
-        let mut report_builder = ReportBuilder::new(ReportColumns::new(vec![
-            ColumnProperty::new(Alignment::Left),
-            ColumnProperty::new(Alignment::Left),
-        ]));
-        report_builder.add_contents(ReportBuilder::header().with_contents(vec![
-            ColumnContent::new("Location").with_alignment(Alignment::Center),
-            ColumnContent::new("History Dates").with_alignment(Alignment::Center),
-        ]))?;
-        report_builder.add_separator('-');
+        let mut report =
+            Report::from(vec![Alignment::Left, Alignment::Left])
+                .with_rows(vec![
+                    Row::from(RowID::Header)
+                        .with_column(Column::from("Location").with_alignment(Alignment::Center))
+                        .with_column(Column::from("History Dates").with_alignment(Alignment::Center)),
+                    Row::from(RowID::Separator('-')),
+                ])?;
         for (location, history_dates) in location_history_dates {
             if history_dates.history_ranges.is_empty() {
-                report_builder.add_contents(ReportBuilder::detail().with_contents(vec![
-                    ColumnContent::new(&location.name),
-                    ColumnContent::new(""),
-                ]))?;
+                report.add(Row::from(RowID::Detail).with_columns(Columns::from(vec![location.name.as_str(), ""])))?;
             } else {
-                let mut location_name = &*location.name;
+                // let mut location_name = &*location.name;
+                let mut location_name = location.name.as_str();
                 for history_range in history_dates.history_ranges {
                     let (from, to) = history_range.as_iso8601();
                     let range = if history_range.is_one_day() {
@@ -140,15 +138,15 @@ mod text {
                     } else {
                         format!("{} to {}", from, to)
                     };
-                    report_builder.add_contents(ReportBuilder::detail().with_contents(vec![
-                        ColumnContent::new(location_name),
-                        ColumnContent::new(&range),
-                    ]))?;
+                    report.add(
+                        Row::from(RowID::Detail).with_columns(Columns::from(vec![location_name, range.as_str()])),
+                    )?;
                     location_name = "";
                 }
             }
         }
-        report_builder.output(report_writer)
+        report.generate(report_writer.create()?)?;
+        Ok(())
     }
 }
 
@@ -204,12 +202,17 @@ mod json {
     /// * `report_writer` - The output manager that controls where report output will be sent.
     /// * `pretty` - if `true` JSON output will be formatted with space and newlines.
     ///
-    pub fn output(location_history_dates: LocationHistoryDates, report_writer: &ReportWriter, pretty: bool) -> CliResult<()> {
+    pub fn output(
+        location_history_dates: LocationHistoryDates,
+        report_writer: &ReportWriter,
+        pretty: bool,
+    ) -> CliResult<()> {
         let location_array: Vec<Value> = location_history_dates
             .iter()
             .map(|location_history| {
                 let (location, history_dates) = location_history;
-                let history_dates: Vec<Value> = history_dates.history_ranges
+                let history_dates: Vec<Value> = history_dates
+                    .history_ranges
                     .iter()
                     .map(|history_range| {
                         let (from, to) = history_range.as_iso8601();
@@ -225,9 +228,7 @@ mod json {
                 })
             })
             .collect();
-        let root = json!({
-            "history": location_array
-        });
+        let root = json!({ "history": location_array });
         let as_text = if pretty { to_string_pretty } else { to_string };
         writeln!(report_writer.create()?, "{}", as_text(&root)?)?;
         Ok(())

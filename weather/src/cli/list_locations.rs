@@ -12,10 +12,10 @@
 //!
 use clap::Args;
 
-use crate::cli::ReportWriter;
-use crate::domain::{Location, LocationQuery, Locations, WeatherData};
+use super::lib::{Location, LocationQuery, Locations, WeatherData};
+use super::ReportWriter;
 
-use super::{CliResult, ReportGenerator};
+use super::{ReportGenerator, Result};
 
 #[derive(Args, Debug)]
 /// The command arguments for the list location command.
@@ -40,7 +40,9 @@ impl ListLocations {
     ///
     /// * `args` - the command arguments association with the instance.
     ///
-    pub fn new(args: CommandArgs) -> ListLocations { ListLocations { args } }
+    pub fn new(args: CommandArgs) -> ListLocations {
+        ListLocations { args }
+    }
 
     /// Get the weather data locations.
     ///
@@ -48,7 +50,7 @@ impl ListLocations {
     ///
     /// `weather_data` - the `domain` instance that will be used.
     ///
-    fn get_locations(&self, weather_data: &WeatherData) -> CliResult<Locations> {
+    fn get_locations(&self, weather_data: &WeatherData) -> Result<Locations> {
         let query = LocationQuery {
             location_filter: self.args.locations.clone(),
             case_insensitive: true,
@@ -69,7 +71,7 @@ impl ReportGenerator for ListLocations {
     /// * `weather_data` - The domain API used to access weather data.
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
-    fn text_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter) -> CliResult<()> {
+    fn text_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter) -> Result<()> {
         text::output(self.get_locations(weather_data)?, report_writer)
     }
     /// Generates a JSON report for list locations.
@@ -82,7 +84,7 @@ impl ReportGenerator for ListLocations {
     /// * `report_writer` - The output manager that controls where report output will be sent.
     /// * `pretty` - if `true` JSON output will be formatted with space and newlines.
     ///
-    fn json_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter, pretty: bool) -> CliResult<()> {
+    fn json_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter, pretty: bool) -> Result<()> {
         json::output(self.get_locations(weather_data)?, report_writer, pretty)
     }
     /// Generates a CSV report for list locations.
@@ -94,7 +96,7 @@ impl ReportGenerator for ListLocations {
     /// * `weather_data` - The domain API used to access weather data.
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
-    fn csv_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter) -> CliResult<()> {
+    fn csv_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter) -> Result<()> {
         csv::output(self.get_locations(weather_data)?, report_writer)
     }
 }
@@ -104,7 +106,7 @@ impl ReportGenerator for ListLocations {
 /// This module utilizes the `text_reports` module to generate reports.
 ///
 mod text {
-    use crate::cli::text_reports::*;
+    use toolslib::text::{Alignment, ColumnDescription, Columns, Report, Row, RowID};
 
     use super::*;
 
@@ -117,32 +119,30 @@ mod text {
     /// * `locations` - The list of locations that will be reported.
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
-    pub fn output(locations: Vec<Location>, report_writer: &ReportWriter) -> CliResult<()> {
+    pub fn output(locations: Vec<Location>, report_writer: &ReportWriter) -> Result<()> {
         let long_lat_width = "-###.########".len();
-        let mut report_builder = ReportBuilder::new(ReportColumns::new(vec![
-            ColumnProperty::new(Alignment::Left),
-            ColumnProperty::new(Alignment::Left),
-            ColumnProperty::new(Alignment::Center).with_minimum_width(long_lat_width * 2 + 1),
-            ColumnProperty::new(Alignment::Left),
-        ]));
-        report_builder.add_contents(ReportBuilder::header().with_contents(vec![
-            ColumnContent::new("Location").with_alignment(Alignment::Center),
-            ColumnContent::new("Alias").with_alignment(Alignment::Center),
-            ColumnContent::new("Longitude/Latitude"),
-            ColumnContent::new("Timezone").with_alignment(Alignment::Center),
-        ]))?;
-        report_builder.add_separator('-');
+        let mut report = Report::from(vec![
+            ColumnDescription::from(Alignment::Left),
+            ColumnDescription::from(Alignment::Left),
+            ColumnDescription::from(Alignment::Center).with_width(long_lat_width * 2 + 1),
+            ColumnDescription::from(Alignment::Left),
+        ])
+        .with_rows(vec![
+            Row::from(RowID::Header)
+                .with_alignment(Alignment::Center)
+                .with_columns(Columns::from(vec!["Location", "Alias", "Longitude/Latitude", "Timezone"])),
+            Row::from(RowID::Separator('-')),
+        ])?;
         for location in locations {
-            report_builder.add_contents(ReportBuilder::detail().with_contents(vec![
-                ColumnContent::new(&location.name),
-                ColumnContent::new(&location.alias),
-                ColumnContent::new(&format!("{}/{}",
-                                            align_text(&location.longitude, long_lat_width, Alignment::Right),
-                                            align_text(&location.latitude, long_lat_width, Alignment::Left))),
-                ColumnContent::new(&location.tz),
-            ]))?;
+            report.add(Row::from(RowID::Detail).with_columns(Columns::from(vec![
+                location.name.as_str(),
+                location.alias.as_str(),
+                format!("{:>long_lat_width$}/{:<long_lat_width$}", &location.longitude, &location.latitude).as_str(),
+                location.tz.as_str(),
+            ])))?;
         }
-        report_builder.output(report_writer)
+        report.generate(report_writer.create()?)?;
+        Ok(())
     }
 }
 
@@ -155,7 +155,7 @@ mod csv {
 
     use crate::cli::ReportWriter;
 
-    use super::{CliResult, Location};
+    use super::{Location, Result};
 
     /// Generates the list locations CSV based report.
     ///
@@ -166,7 +166,7 @@ mod csv {
     /// * `locations` - The list of locations that will be reported.
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
-    pub fn output(locations: Vec<Location>, report_writer: &ReportWriter) -> CliResult<()> {
+    pub fn output(locations: Vec<Location>, report_writer: &ReportWriter) -> Result<()> {
         let report_writer = report_writer.create()?;
         let mut writer = Writer::from_writer(report_writer);
         writer.write_record(&["name", "longitude", "latitude", "alias", "tz"])?;
@@ -176,7 +176,7 @@ mod csv {
                 location.longitude,
                 location.latitude,
                 location.alias,
-                location.tz
+                location.tz,
             ])?;
         }
         Ok(())
@@ -202,7 +202,7 @@ mod json {
     /// * `report_writer` - The output manager that controls where report output will be sent.
     /// * `pretty` - if `true` JSON output will be formatted with space and newlines.
     ///
-    pub fn output(locations: Vec<Location>, report_writer: &ReportWriter, pretty: bool) -> CliResult<()> {
+    pub fn output(locations: Vec<Location>, report_writer: &ReportWriter, pretty: bool) -> Result<()> {
         let location_array: Vec<Value> = locations
             .iter()
             .map(|location| {
@@ -215,9 +215,7 @@ mod json {
                 })
             })
             .collect();
-        let root = json!({
-            "locations": location_array
-        });
+        let root = json!({ "locations": location_array });
         let as_text = if pretty { to_string_pretty } else { to_string };
         writeln!(report_writer.create()?, "{}", as_text(&root)?)?;
         Ok(())

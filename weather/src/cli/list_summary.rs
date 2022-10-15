@@ -14,9 +14,9 @@
 //!
 use clap::Args;
 
-use crate::domain::{LocationHistorySummaries, LocationQuery, WeatherData};
+use super::lib::{LocationHistorySummaries, LocationQuery, WeatherData};
 
-use super::{CliResult, ReportGenerator, ReportWriter};
+use super::{ReportGenerator, ReportWriter, Result as CliResult};
 
 #[derive(Args, Debug)]
 /// The command arguments for the list summary command.
@@ -108,7 +108,9 @@ impl ReportGenerator for ListSummary {
 mod text {
     use thousands::Separable;
 
-    use crate::cli::text_reports::{Alignment, ColumnContent, ColumnProperty, ReportBuilder, ReportColumns};
+    // use crate::cli::text_reports::{Alignment, ColumnContent, ColumnProperty, ReportBuilder, ReportColumns};
+    // use toolslib::text::{Alignment, Column, ColumnDescriptions, Columns, Report, Row, RowDescription, RowID};
+    use toolslib::text::{Alignment, Columns, Report, Row, RowID};
 
     use super::*;
 
@@ -122,21 +124,25 @@ mod text {
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
     pub fn output(location_histories: LocationHistorySummaries, report_writer: &ReportWriter) -> CliResult<()> {
-        let mut report_builder = ReportBuilder::new(ReportColumns::new(vec![
-            ColumnProperty::new(Alignment::Left),
-            ColumnProperty::new(Alignment::Right),
-            ColumnProperty::new(Alignment::Right),
-            ColumnProperty::new(Alignment::Right),
-            ColumnProperty::new(Alignment::Right),
-        ]));
-        report_builder.add_contents(ReportBuilder::header().with_contents(vec![
-            ColumnContent::new("Location").with_alignment(Alignment::Center),
-            ColumnContent::new("Overall Size").with_alignment(Alignment::Center),
-            ColumnContent::new("History Count").with_alignment(Alignment::Center),
-            ColumnContent::new("Raw History Size").with_alignment(Alignment::Center),
-            ColumnContent::new("Compressed Size").with_alignment(Alignment::Center),
-        ]))?;
-        report_builder.add_separator('-');
+        let mut report = Report::from(vec![
+            Alignment::Left,
+            Alignment::Right,
+            Alignment::Right,
+            Alignment::Right,
+            Alignment::Right,
+        ])
+        .with_rows(vec![
+            Row::from(RowID::Header)
+                .with_alignment(Alignment::Center)
+                .with_columns(Columns::from(vec![
+                    "Location",
+                    "Overall Size",
+                    "History Count",
+                    "Raw History Size",
+                    "Compressed Size",
+                ])),
+            Row::from(RowID::Separator('-')),
+        ])?;
         let mut total_size = 0;
         let mut total_history_count = 0;
         let mut total_raw_size = 0;
@@ -145,27 +151,29 @@ mod text {
             let overall_size = history_summary.overall_size.unwrap_or(0);
             let raw_size = history_summary.raw_size.unwrap_or(0);
             let compressed_size = history_summary.compressed_size.unwrap_or(0);
-            report_builder.add_contents(ReportBuilder::detail().with_contents(vec![
-                ColumnContent::new(&location.name),
-                ColumnContent::new(&to_kib(overall_size)),
-                ColumnContent::new(&history_summary.count.separate_with_commas()),
-                ColumnContent::new(&to_kib(raw_size)),
-                ColumnContent::new(&to_kib(compressed_size)),
-            ]))?;
+            report.add(Row::from(RowID::Detail).with_columns(Columns::from(vec![
+                location.name.clone(),
+                to_kib(overall_size),
+                history_summary.count.separate_with_commas(),
+                to_kib(raw_size),
+                to_kib(compressed_size),
+            ])))?;
             total_size += overall_size;
             total_history_count += history_summary.count;
             total_raw_size += raw_size;
             total_compressed_size += compressed_size;
         }
-        report_builder.add_separator('=');
-        report_builder.add_contents(ReportBuilder::detail().with_contents(vec![
-            ColumnContent::new("Total"),
-            ColumnContent::new(&to_kib(total_size)),
-            ColumnContent::new(&total_history_count.separate_with_commas()),
-            ColumnContent::new(&to_kib(total_raw_size)),
-            ColumnContent::new(&to_kib(total_compressed_size)),
-        ]))?;
-        report_builder.output(report_writer)
+        report
+            .add(Row::from(RowID::Separator('=')))?
+            .add(Row::from(RowID::Detail).with_columns(Columns::from(vec![
+                String::from("Total"),
+                to_kib(total_size),
+                total_history_count.separate_with_commas(),
+                to_kib(total_raw_size),
+                to_kib(total_compressed_size),
+            ])))?;
+        report.generate(report_writer.create()?)?;
+        Ok(())
     }
 
     /// Converts the size value into a string.
@@ -236,7 +244,7 @@ mod csv {
                 history.count.to_string(),
                 raw_size.to_string(),
                 compressed_size.to_string(),
-                overall_size.to_string()
+                overall_size.to_string(),
             ])?;
         }
         Ok(())
@@ -262,7 +270,11 @@ mod json {
     /// * `report_writer` - The output manager that controls where report output will be sent.
     /// * `pretty` - if `true` JSON output will be formatted with space and newlines.
     ///
-    pub fn output(location_histories: LocationHistorySummaries, report_writer: &ReportWriter, pretty: bool) -> CliResult<()> {
+    pub fn output(
+        location_histories: LocationHistorySummaries,
+        report_writer: &ReportWriter,
+        pretty: bool,
+    ) -> CliResult<()> {
         let location_array: Vec<Value> = location_histories
             .iter()
             .map(|location_history| {
@@ -276,9 +288,7 @@ mod json {
                 })
             })
             .collect();
-        let root = json!({
-            "locations": location_array
-        });
+        let root = json!({ "locations": location_array });
         let to_text = if pretty { to_string_pretty } else { to_string };
         writeln!(report_writer.create()?, "{}", to_text(&root)?)?;
         Ok(())
