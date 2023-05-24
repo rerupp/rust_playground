@@ -57,9 +57,10 @@ impl StopWatch {
         }
     }
     /// Reset the stopwatch to it's initial values.
-    pub fn reset(&mut self) {
+    pub fn reset(&mut self) -> &mut Self {
         self.start = None;
         self.duration = None;
+        self
     }
     pub fn time_str(&self) -> String {
         let overall_millis = self.millis();

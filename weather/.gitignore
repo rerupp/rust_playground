@@ -1,6 +1,9 @@
 /Cargo.lock
 /target
+.vscode
 .idea
 *.code-workspace
 weather_data
 ,*
+*.log
+*.lis

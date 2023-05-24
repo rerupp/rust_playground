@@ -1,0 +1,17 @@
+[package]
+name = "weather_lib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "weather_lib"
+path = "src/lib.rs"
+
+[dependencies]
+chrono.workspace = true
+chrono-tz.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toolslib.workspace = true
+zip = "0.6.2"

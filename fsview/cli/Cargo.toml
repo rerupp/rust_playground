@@ -1,0 +1,13 @@
+[package]
+name = "fsview"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "3.2", features = ["derive"] }
+chrono.workspace = true
+fslib = { path = "../fslib" }
+log.workspace = true
+log4rs = "1.2"
+serde.workspace = true
+toolslib.workspace = true

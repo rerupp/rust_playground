@@ -1,0 +1,16 @@
+[package]
+name = "fslib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "fs"
+crate-type = ["lib"]
+
+[dependencies]
+chrono.workspace = true
+log.workspace = true
+rusqlite = { version = "0.28", features = ["bundled"] }
+serde.workspace = true
+serde_yaml = "0.9"
+toolslib.workspace = true
