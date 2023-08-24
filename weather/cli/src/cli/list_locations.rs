@@ -10,12 +10,9 @@
 //! The command allows locations to be filtered. The filtering is case insensitive
 //! and will match either the start of the location name or alias.
 //!
+use super::{ReportGenerator, ReportWriter, Result};
 use clap::Args;
-
-use super::lib::{Location, LocationQuery, Locations, WeatherData};
-use super::ReportWriter;
-
-use super::{ReportGenerator, Result};
+use weather_lib::prelude::{DataCriteria, Location, WeatherData};
 
 #[derive(Args, Debug)]
 /// The command arguments for the list location command.
@@ -50,8 +47,8 @@ impl ListLocations {
     ///
     /// `weather_data` - the `domain` instance that will be used.
     ///
-    fn get_locations(&self, weather_data: &WeatherData) -> Result<Locations> {
-        let query = LocationQuery { location_filter: self.args.locations.clone(), case_insensitive: true, sort: true };
+    fn get_locations(&self, weather_data: &WeatherData) -> Result<Vec<Location>> {
+        let query = DataCriteria { filters: self.args.locations.clone(), icase: true, sort: true };
         Ok(weather_data.get_locations(query)?)
     }
 }
@@ -102,9 +99,11 @@ impl ReportGenerator for ListLocations {
 /// This module utilizes the `text_reports` module to generate reports.
 ///
 mod text {
-    use toolslib::{rptcols, rptrow, text::{Report, write_strings}};
-
     use super::*;
+    use toolslib::{
+        rptcols, rptrow,
+        text::{write_strings, Report},
+    };
 
     /// Generates the list locations text based report.
     ///
@@ -138,11 +137,8 @@ mod text {
 /// This module utilizes the `csv` dependency to generate reports.
 ///
 mod csv {
+    use super::{Location, ReportWriter, Result};
     use csv::Writer;
-
-    use crate::cli::ReportWriter;
-
-    use super::{Location, Result};
 
     /// Generates the list locations CSV based report.
     ///
@@ -175,9 +171,8 @@ mod csv {
 /// This module utilizes the `serde_json` dependency to generate reports.
 ///
 mod json {
-    use serde_json::{json, to_string, to_string_pretty, Value};
-
     use super::*;
+    use serde_json::{json, to_string, to_string_pretty, Value};
 
     /// Generates the list locations JSON based report.
     ///

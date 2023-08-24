@@ -11,7 +11,16 @@ path = "src/lib.rs"
 chrono.workspace = true
 chrono-tz.workspace = true
 log.workspace = true
+# rusqlite = { version = "0.29", features = ["bundled"] }
+rusqlite.workspace = true
+# serde_rusqlite = "0.33"
 serde.workspace = true
 serde_json.workspace = true
+snap = "1"
 toolslib.workspace = true
 zip = "0.6.2"
+
+[dev-dependencies]
+pretty_assertions = "1"
+filetime = "0.2"
+rand = "0.8"

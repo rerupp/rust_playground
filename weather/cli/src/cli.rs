@@ -6,15 +6,16 @@
 //! The CLI is built upon `clap` and uses *derive* syntax to define subcommands. The CLI currently
 //! hosts 4 subcommands.
 
-use super::lib::{self, WeatherData};
-use clap::{AppSettings, ArgAction, Args, Parser, Subcommand};
+// use clap::{AppSettings, ArgAction, Args, Parser, Subcommand};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use std::{fmt::Display, io, path::PathBuf, result};
 use toolslib::{
     date_time::parse_date,
-    text::{get_writer, write_strings, Report},
-    Error as ToolsLibError,
+    text::{self, get_writer, write_strings, Report},
 };
+use weather_lib::{self, prelude::WeatherData};
 
+#[allow(unused)]
 mod list_history;
 mod list_locations;
 mod list_summary;
@@ -40,13 +41,13 @@ impl From<&str> for Error {
         Error(format!("cli: {error}"))
     }
 }
-impl From<lib::Error> for Error {
-    fn from(error: lib::Error) -> Self {
-        Error(String::from(&error))
+impl From<weather_lib::Error> for Error {
+    fn from(error: weather_lib::Error) -> Self {
+        Error(error.to_string())
     }
 }
-impl From<ToolsLibError> for Error {
-    fn from(error: ToolsLibError) -> Self {
+impl From<toolslib::Error> for Error {
+    fn from(error: toolslib::Error) -> Self {
         Error(error.to_string())
     }
 }
@@ -65,8 +66,8 @@ impl From<serde_json::Error> for Error {
         Error(format!("json: {error}"))
     }
 }
-impl From<toolslib::text::Error> for Error {
-    fn from(error: toolslib::text::Error) -> Self {
+impl From<text::Error> for Error {
+    fn from(error: text::Error) -> Self {
         Error(error.to_string())
     }
 }
@@ -75,25 +76,36 @@ impl From<toolslib::text::Error> for Error {
 ///
 /// These commands provide the implementation of the CLI interface.
 #[derive(Parser, Debug)]
-#[clap(author, version, setting = AppSettings::ArgRequiredElseHelp)]
+// #[clap(author, version, setting = AppSettings::ArgRequiredElseHelp)]
+#[clap(author, version, arg_required_else_help = true)]
 pub struct Cli {
     /// The directory pathname containing weather data.
     ///
-    /// The data directory  is optional. If it is not provided a default will be used.
-    #[clap(short, long = "directory", value_parser, display_order = 1)]
+    /// The data directory is optional. If it is not provided a default will be used.
+    #[clap(short, long = "dir", value_parser, display_order = 0)]
     pub data_dir: Option<String>,
+    /// Use a database for weather data.
+    #[clap(long = "db", value_parser, display_order = 1)]
+    pub db: bool,
     /// The filename logging output will be written into
+    // #[clap(
+    //     short,
+    //     long = "log", value_name="LOG",
+    //     forbid_empty_values = true, parse(try_from_str = parse_filename),
+    //     group="log", display_order = 3
+    // )]
     #[clap(
+        short,
         long = "log", value_name="LOG",
-        forbid_empty_values = true, parse(try_from_str = parse_filename),
-        group="log", display_order = 2
+        value_parser = parse_filename,
+        group="log", display_order = 3
     )]
     pub logfile_path: Option<PathBuf>,
     /// Append to the log file, otherwise overwrite
-    #[clap(short, long = "append", requires("log"), display_order = 3)]
+    #[clap(short, long = "append", requires("log"), display_order = 4)]
     pub append_log: bool,
     /// Logging verbosity level (once=INFO, twice=DEBUG, thrice=TRACE)
-    #[clap(short, long, action(ArgAction::Count), display_order = 4)]
+    #[clap(short, action(ArgAction::Count), display_order = 5)]
     pub verbosity: u8,
     /// The command that will be run.
     ///
@@ -119,7 +131,8 @@ pub enum Commands {
     ///
     /// The *ll* command reports information about the weather data locations
     /// that are available.
-    #[clap(name = "ll", setting = AppSettings::DeriveDisplayOrder)]
+    // #[clap(name = "ll", setting = AppSettings::DeriveDisplayOrder)]
+    #[clap(name = "ll")]
     ListLocations {
         /// The list locations command arguments.
         #[clap(flatten)]
@@ -132,7 +145,8 @@ pub enum Commands {
     ///
     /// The *ls* command reports a summary of weather data by location. The report
     /// includes totals for the selected (if any) locations.
-    #[clap(name = "ls", setting = AppSettings::DeriveDisplayOrder)]
+    // #[clap(name = "ls", setting = AppSettings::DeriveDisplayOrder)]
+    #[clap(name = "ls")]
     ListSummary {
         /// The list summary command arguments.
         #[clap(flatten)]
@@ -144,7 +158,8 @@ pub enum Commands {
     /// List weather data, by date, available by location.
     ///
     /// The *lh* command reports weather data date ranges by location.
-    #[clap(name = "lh", setting = AppSettings::DeriveDisplayOrder)]
+    // #[clap(name = "lh", setting = AppSettings::DeriveDisplayOrder)]
+    #[clap(name = "lh")]
     ListHistory {
         /// The list history command arguments.
         #[clap(flatten)]
@@ -156,7 +171,8 @@ pub enum Commands {
     /// Generate a weather data report for a location.
     ///
     /// the *rh* command generates a report of weather data by location.
-    #[clap(name = "rh", setting = AppSettings::DeriveDisplayOrder)]
+    // #[clap(name = "rh", setting = AppSettings::DeriveDisplayOrder)]
+    #[clap(name = "rh")]
     ReportHistory {
         /// The report history command arguments.
         #[clap(flatten)]
@@ -231,7 +247,7 @@ pub struct ReportType {
     #[clap(long, value_parser, group = "report_type")]
     pub json: bool,
     /// The name of a file report output will be written too.
-    #[clap(short = 'r', long = "report", value_name = "FILE", forbid_empty_values = true, parse(try_from_str = parse_filename))]
+    #[clap(short = 'r', long = "report", value_name = "FILE", value_parser = parse_filename)]
     pub filepath: Option<PathBuf>,
     /// Append to the log file, otherwise overwrite.
     #[clap(short = 'A', long, requires = "filepath")]
@@ -312,21 +328,25 @@ impl ReportWriter<'_> {
 /// * `filename` - the filename as entered on the command line.
 ///
 fn parse_filename(filename: &str) -> result::Result<PathBuf, String> {
-    let filepath = PathBuf::from(filename);
-    if filepath.is_dir() {
-        Err(format!("{} is a directory...", filename))
-    } else if filepath.is_symlink() {
-        Err(format!("{} is a symlink...", filename))
-    } else if filepath.is_absolute() && !filepath.parent().unwrap().exists() {
-        Err(format!("The parent directory does not exist..."))
+    if filename.is_empty() {
+        Err(format!("The filename cannot be empty."))
     } else {
-        // you can read all about this but "bar.txt" and "foo/bar.txt" are both relative AND
-        // have parent paths, one just happens to be empty...
-        let parent = filepath.parent().unwrap();
-        if parent.to_str().unwrap().len() > 0 && !parent.exists() {
-            Err(format!("The relative path to file does not exist..."))
+        let filepath = PathBuf::from(filename);
+        if filepath.is_dir() {
+            Err(format!("{} is a directory...", filename))
+        } else if filepath.is_symlink() {
+            Err(format!("{} is a symlink...", filename))
+        } else if filepath.is_absolute() && !filepath.parent().unwrap().exists() {
+            Err(format!("The parent directory does not exist..."))
         } else {
-            Ok(filepath)
+            // you can read all about this but "bar.txt" and "foo/bar.txt" are both relative AND
+            // have parent paths, one just happens to be empty...
+            let parent = filepath.parent().unwrap();
+            if parent.to_str().unwrap().len() > 0 && !parent.exists() {
+                Err(format!("The relative path to file does not exist..."))
+            } else {
+                Ok(filepath)
+            }
         }
     }
 }

@@ -12,11 +12,9 @@
 //! The command allows locations to be filtered. The filtering is case insensitive
 //! and will match either the start of the location name or alias.
 //!
-use clap::Args;
-
-use super::lib::{LocationHistorySummaries, LocationQuery, WeatherData};
-
 use super::{ReportGenerator, ReportWriter, Result as CliResult};
+use clap::Args;
+use weather_lib::prelude::{DataCriteria, HistorySummaries, WeatherData};
 
 #[derive(Args, Debug)]
 /// The command arguments for the list summary command.
@@ -48,9 +46,10 @@ impl ListSummary {
     ///
     /// `weather_data` - the `domain` instance that will be used.
     ///
-    fn get_history_summary(&self, weather_data: &WeatherData) -> CliResult<LocationHistorySummaries> {
-        let query = LocationQuery { location_filter: self.args.locations.clone(), case_insensitive: true, sort: true };
-        Ok(weather_data.get_history_summary(query)?)
+    fn get_history_summary(&self, weather_data: &WeatherData) -> CliResult<Vec<HistorySummaries>> {
+        // let criteria = LocationCriteria { location_filter: self.args.locations.clone(), case_insensitive: true, sort: true };
+        let criteria = DataCriteria { filters: self.args.locations.clone(), icase: true, sort: true };
+        Ok(weather_data.get_history_summary(criteria)?)
     }
 }
 
@@ -68,7 +67,6 @@ impl ReportGenerator for ListSummary {
     fn text_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter) -> CliResult<()> {
         text::output(self.get_history_summary(weather_data)?, report_writer)
     }
-
     /// Generates a JSON report for list summary.
     ///
     /// An error will be returned if there are issues getting locations from the domain.
@@ -82,7 +80,6 @@ impl ReportGenerator for ListSummary {
     fn json_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter, pretty: bool) -> CliResult<()> {
         json::output(self.get_history_summary(weather_data)?, report_writer, pretty)
     }
-
     /// Generates a CSV report for list summary.
     ///
     /// An error will be returned if there are issues getting locations from the domain.
@@ -102,14 +99,12 @@ impl ReportGenerator for ListSummary {
 /// This module utilizes the `text_reports` module to generate reports.
 ///
 mod text {
-
+    use super::*;
     use toolslib::{
         fmt::commafy,
         kib, rptcols, rptrow,
         text::{write_strings, Report},
     };
-
-    use super::*;
 
     /// Generates the locations summary text based report.
     ///
@@ -120,7 +115,7 @@ mod text {
     /// * `location_histories` - The list of location history summaries that will be reported.
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
-    pub fn output(location_histories: LocationHistorySummaries, report_writer: &ReportWriter) -> CliResult<()> {
+    pub fn output(location_histories: Vec<HistorySummaries>, report_writer: &ReportWriter) -> CliResult<()> {
         let mut report = Report::from(rptcols!(<, >, >, >, >));
         report.header(rptrow!(^"Location", ^"Overall Size", ^"History Count", ^"Raw History Size", ^"Compressed Size"));
         report.separator("-");
@@ -128,19 +123,19 @@ mod text {
         let mut total_history_count = 0;
         let mut total_raw_size = 0;
         let mut total_compressed_size = 0;
-        for (location, history_summary) in location_histories {
-            let overall_size = history_summary.overall_size.unwrap_or(0);
-            let raw_size = history_summary.raw_size.unwrap_or(0);
-            let compressed_size = history_summary.compressed_size.unwrap_or(0);
+        for location_history_summary in location_histories {
+            let overall_size = location_history_summary.overall_size.unwrap_or(0);
+            let raw_size = location_history_summary.raw_size.unwrap_or(0);
+            let compressed_size = location_history_summary.compressed_size.unwrap_or(0);
             report.text(rptrow!(
-                location.name,
+                location_history_summary.location.name,
                 kib!(overall_size, 0),
-                commafy(history_summary.count),
+                commafy(location_history_summary.count),
                 kib!(raw_size, 0),
                 kib!(compressed_size, 0)
             ));
             total_size += overall_size;
-            total_history_count += history_summary.count;
+            total_history_count += location_history_summary.count;
             total_raw_size += raw_size;
             total_compressed_size += compressed_size;
         }
@@ -161,11 +156,8 @@ mod text {
 /// This module utilizes the `csv` dependency to generate reports.
 ///
 mod csv {
+    use super::{CliResult, HistorySummaries, ReportWriter};
     use csv::Writer;
-
-    use crate::cli::ReportWriter;
-
-    use super::{CliResult, LocationHistorySummaries};
 
     /// Generates the list summary CSV based report.
     ///
@@ -176,16 +168,19 @@ mod csv {
     /// * `location_histories` - The list of location history summaries that will be reported.
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
-    pub fn output(location_histories: LocationHistorySummaries, report_writer: &ReportWriter) -> CliResult<()> {
+    pub fn output(
+        locations_history_summary: Vec<HistorySummaries>,
+        report_writer: &ReportWriter,
+    ) -> CliResult<()> {
         let mut writer = Writer::from_writer(report_writer.get_writer()?);
         writer.write_record(&["location", "entries", "entries_size", "compressed_size", "size"])?;
-        for (location, history) in location_histories {
-            let raw_size = history.raw_size.map_or(0, |v| v);
-            let compressed_size = history.compressed_size.map_or(0, |v| v);
-            let overall_size = history.overall_size.map_or(0, |v| v);
+        for location_history_summary in locations_history_summary {
+            let raw_size = location_history_summary.raw_size.map_or(0, |v| v);
+            let compressed_size = location_history_summary.compressed_size.map_or(0, |v| v);
+            let overall_size = location_history_summary.overall_size.map_or(0, |v| v);
             writer.write_record(&[
-                location.name,
-                history.count.to_string(),
+                location_history_summary.location.name,
+                location_history_summary.count.to_string(),
                 raw_size.to_string(),
                 compressed_size.to_string(),
                 overall_size.to_string(),
@@ -200,9 +195,8 @@ mod csv {
 /// This module utilizes the `serde_json` dependency to generate reports.
 ///
 mod json {
-    use serde_json::{json, to_string, to_string_pretty, Value};
-
     use super::*;
+    use serde_json::{json, to_string, to_string_pretty, Value};
 
     /// Generates the list summary JSON based report.
     ///
@@ -215,20 +209,19 @@ mod json {
     /// * `pretty` - if `true` JSON output will be formatted with space and newlines.
     ///
     pub fn output(
-        location_histories: LocationHistorySummaries,
+        location_histories: Vec<HistorySummaries>,
         report_writer: &ReportWriter,
         pretty: bool,
     ) -> CliResult<()> {
         let location_array: Vec<Value> = location_histories
-            .iter()
-            .map(|location_history| {
-                let (location, history) = location_history;
+            .into_iter()
+            .map(|location_history_summary| {
                 json!({
-                    "location": location.name,
-                    "entries": history.count,
-                    "entries_size": history.raw_size.map_or(0, |v| v),
-                    "compressed_size": history.compressed_size.map_or(0, |v| v),
-                    "size": history.overall_size.map_or(0, |v| v),
+                    "location": location_history_summary.location.name,
+                    "entries": location_history_summary.count,
+                    "entries_size": location_history_summary.raw_size.map_or(0, |v| v),
+                    "compressed_size": location_history_summary.compressed_size.map_or(0, |v| v),
+                    "size": location_history_summary.overall_size.map_or(0, |v| v),
                 })
             })
             .collect();

@@ -5,15 +5,18 @@ A Rust base command line interface (CLI) for displaying weather history.
 ## Background
 This project started as a way to familiarize myself with Rust. I was looking for some project to build and decided emulating the `Python` weather project I built several years ago would be fun.
 
-Even though the *Dark Sky* data API is no longer available, I have lots of data that can be used and the `Python` project would be a handy reference implementation I could always look at. The performance of `Python` was pretty reasonable and I thought it would be fun to compare apple and oranges.
+Even though the *Dark Sky* data API is no longer available, I have historical data that can be used and the `Python` project would be a handy reference implementation I could always look at. The performance of `Python` was pretty reasonable and I thought it would be fun to compare apple and oranges.
 
 ## Project Structure
-The project is actually a Rust workspace consisting of a binary CLI crate and a library crate. It has a dependency on the `toolslib` crate.
+The project is a Rust workspace consisting of two binary command lines and a library crate. It has a dependency on the `toolslib` crate.
 
 The `Cargo.toml` at the workspace level contains common dependencies for both CLI and library crates.
 
 ### `cli` Directory
 This directory contains the source code for the CLI mainline.
+
+### `admin` Directory
+This directory contains the source code for the administrative CLI.
 
 ### `lib` Directory
 This directory contains the backend implementation of the weather domain.
@@ -34,19 +37,16 @@ I did not try to publish anything and I'm not sure I would for this silly thing.
 
 ## Dependencies
 
-Here are a list of dependencies currently being used.
+Here are a list of workspace dependencies.
 
 | Crate | Version | Features |
 | :--- | :--- | :----: |
-| clap | 3.1.18 | derive |
-| serde | 1.0.137 | derive | 
-| serde_json | 1.0.81 | preserve_order |
-| zip | 0.6.2 | |
-| thousands | 0.2.0 | |
 | chrono | 0.4 | |
 | chrono_tz | 0.8 | serde |
-| csv | 1.1 | |
-| log | 0,4 | |
+| log | 0.4 | |
+| rusqlite | 0.29 | blob, bundled, chrono |
+| serde | 1.0.137 | derive | 
+| serde_json | 1.0.81 | preserve_order |
 
 ## IDE Setup
 Here are a couple of notes on setting up the VsCode IDE to run and debug. I did have to install the Rust plugin from the *JetBrain* marketplace but that's it.
