@@ -17,13 +17,11 @@ impl From<rusqlite::Error> for Error {
 }
 
 /// Export the function that will create the database [DataAdapter] adapter.
-pub(crate) use v1::db_data_adapter as create_db_data_adapter;
-
-pub(crate) use v1::admin;
+pub(crate) use v1::{admin, data_adapter};
 mod v1 {
     //! The first version of the database implementation.
     use super::*;
-    use backend::filesys::{weather_dir, ArchiveMd, WeatherArchive, WeatherDir};
+    use backend::filesys::{weather_dir, ArchiveMd, WeatherArchive, WeatherDir, WeatherFile};
 
     #[cfg(test)]
     use backend::testlib;
@@ -47,7 +45,7 @@ mod v1 {
     /// A helper to create a database connection.
     macro_rules! db_conn {
         ($weather_dir:expr) => {
-            db_connection(Some($weather_dir.get_file(DB_FILENAME).to_string().as_str()))
+            db_connection(Some($weather_dir.file(DB_FILENAME).to_string().as_str()))
         };
     }
 
@@ -56,16 +54,16 @@ mod v1 {
     /// # Arguments
     ///
     /// `dirname` is the directory containing weather data.
-    pub(crate) fn db_data_adapter(dirname: &str) -> Result<Box<dyn DataAdapter>> {
+    pub(crate) fn data_adapter(dirname: &str) -> Result<Box<dyn DataAdapter>> {
         let weather_dir = weather_dir(dirname)?;
         let conn = db_conn!(&weather_dir)?;
         let db_config = admin::database_configuration(&conn)?;
         if db_config.hybrid {
-            hybrid::create(weather_dir)
+            hybrid::data_adapter(weather_dir)
         } else if db_config.document {
-            document::create(weather_dir)
+            document::data_adapter(weather_dir)
         } else {
-            normalized::create(weather_dir)
+            normalized::data_adapter(weather_dir)
         }
     }
 
@@ -74,7 +72,8 @@ mod v1 {
 
         use super::*;
         use backend::filesys::WeatherFile;
-        use entities::DbConfig;
+        use entities::{DbConfig, DbInfo};
+        use rusqlite::named_params;
 
         /// Initialize the database schema.
         ///
@@ -84,7 +83,13 @@ mod v1 {
         /// * `db_config` is the database configuration.
         /// * `drop` when true will delete the schema before intialization.
         /// * `load` when true will load weather data into the database.
-        pub(crate) fn init_db(weather_dir: &WeatherDir, db_config: DbConfig, drop: bool, load: bool) -> Result<()> {
+        pub(crate) fn init_db(
+            weather_dir: &WeatherDir,
+            db_config: DbConfig,
+            drop: bool,
+            load: bool,
+            threads: usize,
+        ) -> Result<()> {
             if drop {
                 drop_db(weather_dir, false)?;
             }
@@ -96,9 +101,9 @@ mod v1 {
                 if db_config.hybrid {
                     hybrid::load(&mut conn, weather_dir)?;
                 } else if db_config.document {
-                    document::load(&mut conn, weather_dir, db_config.compress)?;
+                    document::load(weather_dir, db_config.compress, threads)?;
                 } else {
-                    normalized::load(&mut conn, weather_dir)?;
+                    normalized::load(weather_dir, threads)?;
                 }
             }
             Ok(())
@@ -111,7 +116,7 @@ mod v1 {
         /// * `weather_dir` is the weather data directory.
         /// * `delete` when true will remove the database file.
         pub(crate) fn drop_db(weather_dir: &WeatherDir, delete: bool) -> Result<()> {
-            let db_file = weather_dir.get_file(DB_FILENAME);
+            let db_file = weather_dir.file(DB_FILENAME);
             if db_file.exists() {
                 if delete {
                     delete_db(&db_file)?;
@@ -127,11 +132,17 @@ mod v1 {
         /// # Arguments
         ///
         /// * `weather_dir` is the weather data directory.
-        pub(crate) fn stat(weather_dir: &WeatherDir) -> Result<DbConfig> {
-            log::debug!("stat DB");
-            let conn = db_conn!(weather_dir)?;
-            let mode = database_configuration(&conn)?;
-            Ok(mode)
+        pub(crate) fn stat(weather_dir: &WeatherDir) -> Result<DbInfo> {
+            let file = weather_dir.file(DB_FILENAME);
+            let db_info = if file.exists() {
+                let size = file.size() as usize;
+                let conn = db_conn!(weather_dir)?;
+                let config = database_configuration(&conn)?;
+                DbInfo { config: Some(config), size }
+            } else {
+                DbInfo { config: None, size: 0 }
+            };
+            Ok(db_info)
         }
 
         /// Get the database configuration.
@@ -147,7 +158,7 @@ mod v1 {
                 } else if row.get("document")? {
                     DbConfig::document(row.get("compress")?)
                 } else {
-                    DbConfig::full()
+                    DbConfig::normalize()
                 };
                 Ok(db_config)
             })?;
@@ -178,9 +189,17 @@ mod v1 {
         /// * `db_config` is the database configuration.
         fn init_config(conn: &Connection, db_config: &DbConfig) -> Result<()> {
             log::debug!("db tables");
-            let sql = r#"INSERT INTO config (hybrid, document, full, compress) VALUES (?1, ?2, ?3, ?4)"#;
-            let params = (db_config.hybrid, db_config.document, db_config.full, db_config.compress);
-            match conn.execute(sql, params) {
+            const SQL: &str = r#"
+            INSERT INTO config (hybrid, document, full, compress)
+                VALUES (:hybrid, :document, :normalize, :compress)
+            "#;
+            let params = named_params! {
+                ":hybrid": db_config.hybrid,
+                ":document": db_config.document,
+                ":normalize": db_config.normalize,
+                ":compress": db_config.compress
+            };
+            match conn.execute(SQL, params) {
                 Ok(_) => Ok(()),
                 Err(err) => {
                     let reason = format!("Error setting config table ({}).", &err);
@@ -240,45 +259,41 @@ mod v1 {
                 let fixture = testlib::TestFixture::create();
                 let test_files = testlib::test_resources().join("db");
                 fixture.copy_resources(&test_files);
-                let weather_dir = WeatherDir::new(&fixture.to_string()).unwrap();
+                let weather_dir = WeatherDir::try_from(fixture.to_string()).unwrap();
                 let db_file = PathBuf::from(&weather_dir.to_string()).join(DB_FILENAME);
                 assert!(!db_file.exists());
+                macro_rules! assert_config {
+                    ($config:expr, $hybrid:expr, $document:expr, $normalize:expr, $compress:expr) => {
+                        assert_eq!($config.hybrid, $hybrid);
+                        assert_eq!($config.document, $document);
+                        assert_eq!($config.normalize, $normalize);
+                        assert_eq!($config.compress, $compress);
+                    };
+                }
                 // hybrid
-                admin::init_db(&weather_dir, DbConfig::hybrid(), true, true).unwrap();
+                admin::init_db(&weather_dir, DbConfig::hybrid(), true, true, 1).unwrap();
                 assert!(db_file.exists());
-                let db_config = admin::stat(&weather_dir).unwrap();
-                assert!(db_config.hybrid);
-                assert!(!db_config.document);
-                assert!(!db_config.full);
-                assert!(!db_config.compress);
+                let config = admin::stat(&weather_dir).unwrap().config.unwrap();
+                assert_config!(config, true, false, false, false);
                 admin::drop_db(&weather_dir, true).unwrap();
                 assert!(!db_file.exists());
                 // document uncompressed
-                admin::init_db(&weather_dir, DbConfig::document(false), false, true).unwrap();
+                admin::init_db(&weather_dir, DbConfig::document(false), false, true, 1).unwrap();
                 assert!(db_file.exists());
-                let db_config = admin::stat(&weather_dir).unwrap();
-                assert!(!db_config.hybrid);
-                assert!(db_config.document);
-                assert!(!db_config.full);
-                assert!(!db_config.compress);
+                let config = admin::stat(&weather_dir).unwrap().config.unwrap();
+                assert_config!(config, false, true, false, false);
                 // document compressed
                 admin::drop_db(&weather_dir, false).unwrap();
-                admin::init_db(&weather_dir, DbConfig::document(true), false, true).unwrap();
+                admin::init_db(&weather_dir, DbConfig::document(true), false, true, 1).unwrap();
                 assert!(db_file.exists());
-                let db_config = admin::stat(&weather_dir).unwrap();
-                assert!(!db_config.hybrid);
-                assert!(db_config.document);
-                assert!(!db_config.full);
-                assert!(db_config.compress);
+                let config = admin::stat(&weather_dir).unwrap().config.unwrap();
+                assert_config!(config, false, true, false, true);
                 // full
                 admin::drop_db(&weather_dir, false).unwrap();
-                admin::init_db(&weather_dir, DbConfig::full(), false, false).unwrap();
+                admin::init_db(&weather_dir, DbConfig::normalize(), false, false, 1).unwrap();
                 assert!(db_file.exists());
-                let db_config = admin::stat(&weather_dir).unwrap();
-                assert!(!db_config.hybrid);
-                assert!(!db_config.document);
-                assert!(db_config.full);
-                assert!(!db_config.compress);
+                let config = admin::stat(&weather_dir).unwrap().config.unwrap();
+                assert_config!(config, false, false, true, false);
             }
         }
     }
@@ -569,9 +584,7 @@ mod v1 {
             let mut rows = stmt.query([])?;
             let mut locations = vec![];
             while let Some(row) = rows.next()? {
-                let alias: String = row.get("alias")?;
                 let location = Location {
-                    id: alias.to_lowercase(),
                     name: row.get("name")?,
                     alias: row.get("alias")?,
                     longitude: row.get("longitude")?,
@@ -864,27 +877,27 @@ mod v1 {
             use super::*;
             use entities::DbConfig;
 
-            fn testenv() -> Connection {
-                let fixture = testlib::TestFixture::create();
+            fn testenv(fixture: &testlib::TestFixture) -> Connection {
                 let test_files = testlib::test_resources().join("db");
                 fixture.copy_resources(&test_files);
-                let weather_dir = WeatherDir::new(&fixture.to_string()).unwrap();
-                admin::init_db(&weather_dir, DbConfig::hybrid(), true, true).unwrap();
+                let weather_dir = WeatherDir::try_from(fixture.to_string()).unwrap();
+                admin::init_db(&weather_dir, DbConfig::hybrid(), true, true, 1).unwrap();
                 db_conn!(&weather_dir).unwrap()
             }
 
             #[test]
             fn query_locations() {
-                let conn = testenv();
+                let fixture = testlib::TestFixture::create();
+                let conn = testenv(&fixture);
                 let locations = get(&conn, &vec![], true).unwrap();
                 assert_eq!(locations.len(), 3);
-                for (location, expected_id) in locations.iter().zip(["between", "north", "south"].iter()) {
-                    assert_eq!(location.id, *expected_id);
+                for (location, expected_alias) in locations.iter().zip(["between", "north", "south"].iter()) {
+                    assert_eq!(location.alias, *expected_alias);
                 }
                 let locations = get(&conn, &vec!["south".to_string(), "north".to_string()], true).unwrap();
                 assert_eq!(locations.len(), 2);
-                for (location, expected_id) in locations.iter().zip(["north", "south"].iter()) {
-                    assert_eq!(location.id, *expected_id);
+                for (location, expected_alias) in locations.iter().zip(["north", "south"].iter()) {
+                    assert_eq!(location.alias, *expected_alias);
                 }
             }
             #[test]
@@ -921,23 +934,21 @@ mod v1 {
     /// The metadata insert SQL used by the [DataAdapter] implementations.
     const METADATA_SQL: &str = r#"
     INSERT INTO metadata (lid, date, store_size, size, mtime)
-        VALUES (?1, ?2, ?3, ?4, ?5)
+        VALUES (:lid, :date, :store_size, :size, :mtime)
     "#;
 
-    /// The database hybrid implementation
     mod hybrid {
+        //! The database hybrid implementation
         #![allow(unused)]
         use super::*;
         use crate::{
-            backend::{
-                filesys::{archive_name, WeatherHistory},
-                DataAdapter, Error, Result,
-            },
+            backend::{filesys::WeatherHistory, DataAdapter, Error, Result},
             prelude::{DailyHistories, DataCriteria, DateRange, HistoryDates, HistorySummaries, Location},
         };
+        use rusqlite::named_params;
 
         /// Create the *hybrid* version of the data adapter.
-        pub(crate) fn create(weather_dir: WeatherDir) -> Result<Box<dyn DataAdapter>> {
+        pub(crate) fn data_adapter(weather_dir: WeatherDir) -> Result<Box<dyn DataAdapter>> {
             Ok(Box::new(HybridDataAdapter(weather_dir)))
         }
 
@@ -963,7 +974,7 @@ mod v1 {
                     0 => Err(Error::from("The data criteria did not result in finding a location.")),
                     1 => {
                         let location = locations.pop().unwrap();
-                        let file = self.0.get_file(&archive_name(&location.alias));
+                        let file = self.0.archive(&location.alias);
                         let archive = WeatherHistory::new(&location.alias, file)?;
                         let daily_histories = archive.daily_histories(&history_range)?;
                         Ok(DailyHistories { location, daily_histories })
@@ -990,7 +1001,7 @@ mod v1 {
                 let mut history_summaries = query::history_summaries(&conn, criteria)?;
                 // scan the archives to get the overall size
                 for history_summary in &mut history_summaries {
-                    let file = self.0.get_file(&archive_name(&history_summary.location.alias));
+                    let file = self.0.archive(&history_summary.location.alias);
                     history_summary.overall_size.replace(file.size() as usize);
                 }
                 Ok(history_summaries)
@@ -1021,12 +1032,17 @@ mod v1 {
                 let mut stmt = tx.prepare(METADATA_SQL)?;
                 for (lid, alias) in id_aliases {
                     log::debug!("    {}", alias);
-                    let filename = archive_name(&alias);
-                    let file = weather_dir.get_file(&filename);
+                    let file = weather_dir.archive(&alias);
                     let archive = WeatherArchive::open(&alias, file)?;
                     for md in archive.archive_iter(None, false, ArchiveMd::new)? {
                         let params = (lid, &md.date, md.compressed_size, md.size, md.mtime);
-                        stmt.execute(params)?;
+                        stmt.execute(named_params! {
+                            ":lid": lid,
+                            ":date": &md.date,
+                            ":store_size": md.compressed_size,
+                            ":size": md.size,
+                            ":mtime": md.mtime
+                        })?;
                     }
                 }
             }
@@ -1035,28 +1051,25 @@ mod v1 {
         }
     }
 
-    /// The database document implementation
     mod document {
+        //! The database document implementation
         use super::*;
         use crate::{
-            backend::{
-                filesys::{archive_name, ArchiveData},
-                DataAdapter, Error, Result,
-            },
+            backend::{filesys::ArchiveData, string_to_json, DarkskyConverter, DataAdapter, Error, Result},
             prelude::{
                 DailyHistories, DailyHistory, DataCriteria, DateRange, HistoryDates, HistorySummaries, Location,
             },
         };
         use chrono::NaiveDate;
         use rusqlite::{blob::ZeroBlob, named_params, Transaction};
-        use toolslib::stopwatch::StopWatch;
+        use serde_json::{json, Value};
 
         /// Create the *document* version of the data adapter.
         ///
         /// # Arguments
         ///
         /// * `weather_dir` is the weather data directory name.
-        pub(crate) fn create(weather_dir: WeatherDir) -> Result<Box<dyn DataAdapter>> {
+        pub(crate) fn data_adapter(weather_dir: WeatherDir) -> Result<Box<dyn DataAdapter>> {
             let data_adapter = DocumentDataAdapter(weather_dir);
             Ok(Box::new(data_adapter))
         }
@@ -1158,249 +1171,408 @@ mod v1 {
                 let date: NaiveDate = row.get("date")?;
                 let json_text: String = if db_config.compress {
                     let rid: i64 = row.get("document_id")?;
-                    let data = document::read_blob(conn, "documents", "daily_zip", rid)?;
-                    let json = document::uncompress_str(&data[..])?;
+                    let data = blob::read(conn, "documents", "daily_zip", rid)?;
+                    let json = compression::uncompress_str(&data[..])?;
                     json
                 } else {
                     row.get("daily")?
                 };
-                let json = backend::filesys::to_json(json_text.as_bytes())?;
-                daily_histories.push(backend::filesys::to_daily_history(alias, date, &json)?);
+                // restore the Darksky document structure
+                let json = json!({
+                    "daily": {
+                        "data": [
+                            string_to_json(&json_text)?
+                        ]
+                    }
+                });
+                let history = DailyHistory::from_json(alias, &date, &json)?;
+                daily_histories.push(history);
             }
             Ok(daily_histories)
         }
 
-        use snap::{read, write};
-        use std::io::{Read, Write};
+        pub(crate) use darksky::load;
+        mod darksky {
+            //! The document database archive loader for DarkSky weather data.
+            use super::*;
+            use archive_loader::*;
+            use rusqlite::types::Null;
+            use std::{
+                sync::mpsc::{self, TryRecvError},
+                thread, time,
+            };
 
-        /// Compress a string using `snap`.
-        ///
-        /// # Arguments
-        ///
-        /// * `data` is the string that will be compressed.
-        fn compress_str(data: &str) -> Result<Vec<u8>> {
-            compress(data.as_bytes())
-        }
-
-        /// Compress a sequence of bytes.
-        ///
-        /// # Argument
-        ///
-        /// * `data` is the sequence of bytes that will be compressed.
-        fn compress(data: &[u8]) -> Result<Vec<u8>> {
-            let mut writer = write::FrameEncoder::new(vec![]);
-            match writer.write_all(data) {
-                Ok(_) => match writer.into_inner() {
-                    Ok(compressed_data) => Ok(compressed_data),
-                    Err(err) => {
-                        let reason = format!("Error getting compressed data ({})", err);
-                        Err(Error::from(reason))
-                    }
-                },
-                Err(err) => {
-                    let reason = format!("Error compressing data ({})", err);
-                    Err(Error::from(reason))
-                }
+            /// The data passed through the [ArchiveLoader].
+            #[derive(Debug)]
+            struct LoadMsg {
+                /// The location table identifier.
+                pub lid: i64,
+                /// The history date
+                pub date: NaiveDate,
+                /// The size of the daily history
+                pub size: usize,
+                /// The store size of the daily history.
+                pub store_size: usize,
+                /// Indicate if the history is compressed or not
+                pub compressed: bool,
+                /// The daily history.
+                pub history: Vec<u8>,
             }
-        }
 
-        /// Uncompress a sequence of bytes into a string using `snap`.
-        ///
-        /// # Arguments
-        ///
-        /// * `compressed_data` is what will be uncompressed and converted to a string.
-        pub(super) fn uncompress_str(compressed_data: &[u8]) -> Result<String> {
-            match String::from_utf8(uncompress(compressed_data)?) {
-                Ok(string) => Ok(string),
-                Err(err) => {
-                    let reason = format!("Error reading UTF8 ({})", err);
-                    Err(Error::from(reason))
-                }
+            /// The type definition for the document producer.
+            type Sender = mpsc::Sender<LoadMsg>;
+
+            /// The type definition for the document consummer.
+            type Receiver = mpsc::Receiver<LoadMsg>;
+
+            /// Take the DarkSky archives and push them into the database.
+            ///
+            /// # Argument
+            ///
+            /// * `weather_dir` is the weather data directory.
+            /// * `threads` is the number of workers to use getting data from archives.
+            pub(crate) fn load(weather_dir: &WeatherDir, compress: bool, threads: usize) -> Result<()> {
+                let conn = db_conn!(weather_dir)?;
+                let archives = ArchiveQueue::new(&conn, weather_dir)?;
+                let mut loader: ArchiveLoader<LoadMsg> = ArchiveLoader::new(threads);
+                loader.execute(archives, || Box::new(DarkskyProducer(compress)), || Box::new(DocumentConsummer(conn)))
             }
-        }
 
-        /// Uncompress a sequence of bytes into a sequence of uncompressed bytes.
-        ///
-        /// # Arguments
-        ///
-        /// * `compressed_data` is what will be uncompressed into a sequence of bytes.
-        fn uncompress(compressed_data: &[u8]) -> Result<Vec<u8>> {
-            let mut data = vec![];
-            match read::FrameDecoder::new(&compressed_data[..]).read_to_end(&mut data) {
-                Ok(_) => Ok(data),
-                Err(err) => {
-                    let reason = format!("Error reading compressed data ({})", err);
-                    Err(Error::from(reason))
-                }
-            }
-        }
-
-        /// Writes a *blob* into the database. This is specific to `sqlite3`.
-        ///
-        /// # Arguments
-        ///
-        /// * `tx` is the transaction used to write to the database.
-        /// * `table` is the table that will hold the *blob*.
-        /// * `column` is the database column defined as a *blob*.
-        /// * `rid` is the row identifier of the *blob*.
-        fn write_blob(tx: &Transaction, history: &[u8], table: &str, column: &str, rid: i64) -> Result<()> {
-            match tx.blob_open(rusqlite::DatabaseName::Main, table, column, rid, false) {
-                Ok(mut blob) => match blob.write_all(history) {
-                    Ok(_) => Ok(()),
-                    Err(err) => {
-                        let reason = format!("Error writing blob {}({}) ({})", table, column, err);
-                        Err(Error::from(reason))
-                    }
-                },
-                Err(err) => {
-                    let reason = format!("Error opening blob writer on {}({}) ({})", table, column, err);
-                    Err(Error::from(reason))
-                }
-            }
-        }
-
-        /// Read a *blob* from the database. This is specific to `sqlite3`.
-        ///
-        /// # Arguments
-        ///
-        /// * `conn` is the database connection that will be used.
-        /// * `table` is the table that will hold the *blob*.
-        /// * `column` is the database column defined as a *blob*.
-        /// * `rid` is the row identifier of the *blob*.
-        pub(super) fn read_blob(conn: &Connection, table: &str, column: &str, rid: i64) -> Result<Vec<u8>> {
-            match conn.blob_open(rusqlite::DatabaseName::Main, table, column, rid, true) {
-                Ok(mut blob) => {
-                    let mut compressed_data: Vec<u8> = vec![0; blob.len()];
-                    match blob.read_exact(&mut compressed_data[..]) {
-                        Ok(_) => Ok(compressed_data),
+            struct DarkskyProducer(
+                /// Indicates the history document should be compressed
+                bool,
+            );
+            impl DarkskyProducer {
+                /// This is called to semd the archive data to the [ArchiveConsummer].
+                ///
+                /// # Arguments
+                ///
+                /// * `lid` is the locations primary id in the database.
+                /// * `alias` is the locations alias name.
+                /// * `date` is the date associated with the archive data.
+                /// * `json` is archive data as parsed `JSON`.
+                /// * `sender` is used to pass data to the collector.
+                #[rustfmt::skip]
+                fn send_history(&self, lid: i64, alias: &str, date: NaiveDate, json: Value, sender: &Sender) -> Result<()> {
+                    match serde_json::to_string(&json) {
+                        Ok(history) => {
+                            let size = history.len();
+                            let history = match self.0 {
+                                true => compression::compress_str(&history)?,
+                                false => history.into_bytes()
+                            };
+                            let store_size = history.len();
+                            let msg = LoadMsg { lid, date, size, store_size, compressed: self.0, history };
+                            match sender.send(msg) {
+                                Ok(_) => Ok(()),
+                                Err(_) => Err(Error::from("Document SendError...")),
+                            }
+                        }
                         Err(err) => {
-                            let reason = format!("Error reading blob {}({}) ({})", table, column, err);
+                            let reason = format!("Error JSON to_string for {} {} ({}).", alias, date, &err);
                             Err(Error::from(reason))
                         }
                     }
                 }
-                Err(err) => {
-                    let reason = format!("Error opening blob reader on {}({}) ({})", table, column, err);
-                    Err(Error::from(reason))
+            }
+            impl ArchiveProducer<LoadMsg> for DarkskyProducer {
+                /// This is called by the [ArchiveProducer] to pull data from the archive.
+                ///
+                /// # Arguments
+                ///
+                /// * `lid` is the locations primary id in the database.
+                /// * `alias` is the locations alias name.
+                /// * `file` is the weather data archive.
+                /// * `sender` is used to pass data to the collector.
+                fn gather(&self, lid: i64, alias: &str, file: WeatherFile, sender: &Sender) -> Result<usize> {
+                    let archive = WeatherArchive::open(&alias, file)?;
+                    let mut result = Ok(0);
+                    for data in archive.archive_iter(None, false, ArchiveData::new)? {
+                        let json = data.json()?["daily"]["data"][0].take();
+                        if json.is_object() {
+                            self.send_history(lid, alias, data.date, json, sender)?;
+                            match result.as_mut() {
+                                Ok(count) => *count += 1,
+                                Err(_) => unreachable!("Result is an error and shouldn't be..."),
+                            };
+                        } else {
+                            let reason = format!("Error getting history for {} on {} (not daily).", alias, data.date);
+                            result = Err(Error::from(reason));
+                            break;
+                        }
+                    }
+                    result
+                }
+            }
+
+            /// The `SQL` used to *insert* history.
+            const INSERT_SQL: &str = r#"
+            INSERT INTO documents (mid, daily, daily_zip, daily_size)
+                VALUES (:mid, :daily, :daily_zip, :daily_size)
+            "#;
+
+            /// The database history loader.
+            struct DocumentConsummer(
+                /// The database connection that will be used.
+                Connection,
+            );
+            impl DocumentConsummer {
+                /// Add weather history to the database.
+                ///
+                /// This is a `static` method in order to separate collection from adding data. It can't be
+                /// an instance method because it would require borrowing mutable from an instance already
+                /// mutable.
+                ///
+                /// # Arguments
+                ///
+                /// * `tx` is the transaction associate with the data insertion.
+                /// * `msg` contains the history that will be added to the database.
+                fn insert_history(tx: &mut Transaction, msg: LoadMsg) -> Result<()> {
+                    let mut data_stmt = tx.prepare_cached(INSERT_SQL)?;
+                    let mut md_stmt = tx.prepare_cached(METADATA_SQL)?;
+                    md_stmt.execute(named_params! {
+                        ":lid": msg.lid,
+                        ":date": msg.date,
+                        ":store_size": msg.store_size,
+                        ":size": msg.size,
+                        ":mtime": 0
+                    })?;
+                    let mid = tx.last_insert_rowid();
+                    if msg.compressed {
+                        data_stmt.execute(named_params! {
+                            ":mid": mid,
+                            ":daily": Null,
+                            ":daily_zip": ZeroBlob(msg.store_size as i32),
+                            ":daily_size": msg.size
+                        })?;
+                        let rid = tx.last_insert_rowid();
+                        blob::write(tx, &msg.history, "documents", "daily_zip", rid)?;
+                    } else {
+                        data_stmt.execute(named_params! {
+                            ":mid": mid,
+                            ":daily": msg.history,
+                            ":daily_zip": Null,
+                            ":daily_size": msg.size
+                        })?;
+                    }
+                    Ok(())
+                }
+            }
+            impl ArchiveConsummer<LoadMsg> for DocumentConsummer {
+                /// Called by the [ArchiveLoader] to collect the weather history being mined.
+                ///
+                /// # Arguments
+                ///
+                /// * `receiver` is used to collect the weather data.
+                fn collect(&mut self, receiver: Receiver) -> Result<usize> {
+                    let mut tx = self.0.transaction()?;
+                    let mut count: usize = 0;
+                    // spin on the receiver until there's no one sending more data
+                    let pause = time::Duration::from_millis(1);
+                    loop {
+                        match receiver.try_recv() {
+                            Ok(msg) => {
+                                Self::insert_history(&mut tx, msg)?;
+                                count += 1;
+                            }
+                            Err(err) => match err {
+                                TryRecvError::Empty => thread::sleep(pause),
+                                TryRecvError::Disconnected => break,
+                            },
+                        }
+                    }
+                    // commit the load
+                    match tx.commit() {
+                        Ok(_) => Ok(count),
+                        Err(err) => {
+                            let reason = format!("Error commiting load transaction ({}).", &err);
+                            Err(Error::from(reason))
+                        }
+                    }
                 }
             }
         }
 
-        /// Loads the database based on the *document* implementation of weather data.
-        ///
-        /// # Arguments
-        ///
-        /// * `conn` is the database connection that will be used.
-        /// * `weather_dir` is the weather data directory.
-        /// * `compress` when true will compress the weather history documents.
-        pub(super) fn load(conn: &mut Connection, weather_dir: &WeatherDir, compress: bool) -> Result<()> {
-            log::info!("  documents");
-            let mut histories_loaded: usize = 0;
-            let mut overall_time = StopWatch::start_new();
-            for (lid, alias) in locations::id_aliases(conn)? {
-                let mut archive_load = StopWatch::start_new();
-                let file = weather_dir.get_file(&archive_name(&alias));
-                let archive = WeatherArchive::open(&alias, file)?;
-                let mut tx = conn.transaction()?;
-                let history_count = load_archive(&mut tx, lid, &archive, compress)?;
-                tx.commit()?;
-                archive_load.stop();
-                let per_msec = ((history_count as f64 / archive_load.elapsed().as_millis() as f64) * 1000.0) as usize;
-                log::debug!("    {}: {} loaded in: {} ({}us/history)", alias, history_count, archive_load, per_msec);
-                histories_loaded += history_count;
-            }
-            overall_time.stop();
-            let per_msec = ((histories_loaded as f64 / overall_time.elapsed().as_millis() as f64) * 1000.0) as usize;
-            log::debug!("    {} histories load time: {} ({}us/history)", histories_loaded, overall_time, per_msec);
-            Ok(())
-        }
+        mod compression {
+            //! Isolate the `Snappy` compression format here
+            use super::{Error, Result};
+            use snap::{read, write};
+            use std::io::{Read, Write};
 
-        /// Load the contents of a weather data archive into the databaase.
-        ///
-        /// # Arguments
-        ///
-        /// * `tx` is the database transaction that will be used.
-        /// * `lid` is the location primary id history is associated with.
-        /// * `archive` is the weather history archive to load.
-        /// * `compress` when true will compress the weather history documents.
-        fn load_archive(tx: &mut Transaction, lid: i64, archive: &WeatherArchive, compress: bool) -> Result<usize> {
-            const DATA_SQL: &str =
-                r#"INSERT INTO documents (mid, daily, daily_zip, daily_size) VALUES (?1, ?2, ?3, ?4)"#;
-            let mut data_stmt = tx.prepare_cached(DATA_SQL)?;
-            let mut md_stmt = tx.prepare_cached(METADATA_SQL)?;
-            let mut histories_loaded = 0;
-            for data in archive.archive_iter(None, false, ArchiveData::new)? {
-                let json = data.json()?;
-                let daily = &json["daily"]["data"][0].to_string();
-                if compress {
-                    let daily_zip = document::compress_str(daily)?;
-                    let size = daily.len();
-                    let store_size = daily_zip.len();
-                    md_stmt.execute((lid, data.date, store_size, size, 0))?;
-                    let mid = tx.last_insert_rowid();
-                    data_stmt.execute((mid, "", ZeroBlob(daily_zip.len() as i32), daily.len()))?;
-                    let rid = tx.last_insert_rowid();
-                    document::write_blob(tx, &daily_zip, "documents", "daily_zip", rid)?;
-                } else {
-                    let size = daily.len();
-                    md_stmt.execute((lid, data.date, size, size, 0))?;
-                    let mid = tx.last_insert_rowid();
-                    data_stmt.execute((mid, daily, ZeroBlob(0), daily.len()))?;
+            /// Compress a string using `snap`.
+            ///
+            /// # Arguments
+            ///
+            /// * `data` is the string that will be compressed.
+            pub(super) fn compress_str(data: &str) -> Result<Vec<u8>> {
+                compress(data.as_bytes())
+            }
+
+            /// Compress a sequence of bytes.
+            ///
+            /// # Argument
+            ///
+            /// * `data` is the sequence of bytes that will be compressed.
+            fn compress(data: &[u8]) -> Result<Vec<u8>> {
+                let mut writer = write::FrameEncoder::new(vec![]);
+                match writer.write_all(data) {
+                    Ok(_) => match writer.into_inner() {
+                        Ok(compressed_data) => Ok(compressed_data),
+                        Err(err) => {
+                            let reason = format!("Error getting compressed data ({})", err);
+                            Err(Error::from(reason))
+                        }
+                    },
+                    Err(err) => {
+                        let reason = format!("Error compressing data ({})", err);
+                        Err(Error::from(reason))
+                    }
                 }
-                histories_loaded += 1;
             }
-            Ok(histories_loaded)
+
+            /// Uncompress a sequence of bytes into a string using `snap`.
+            ///
+            /// # Arguments
+            ///
+            /// * `compressed_data` is what will be uncompressed and converted to a string.
+            pub(super) fn uncompress_str(compressed_data: &[u8]) -> Result<String> {
+                match String::from_utf8(uncompress(compressed_data)?) {
+                    Ok(string) => Ok(string),
+                    Err(err) => {
+                        let reason = format!("Error reading UTF8 ({})", err);
+                        Err(Error::from(reason))
+                    }
+                }
+            }
+
+            /// Uncompress a sequence of bytes into a sequence of uncompressed bytes.
+            ///
+            /// # Arguments
+            ///
+            /// * `compressed_data` is what will be uncompressed into a sequence of bytes.
+            pub(super) fn uncompress(compressed_data: &[u8]) -> Result<Vec<u8>> {
+                let mut data = vec![];
+                match read::FrameDecoder::new(&compressed_data[..]).read_to_end(&mut data) {
+                    Ok(_) => Ok(data),
+                    Err(err) => {
+                        let reason = format!("Error reading compressed data ({})", err);
+                        Err(Error::from(reason))
+                    }
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+
+                #[test]
+                fn compress_uncompress() {
+                    let testcase = include_str!("db/schema.sql");
+                    let compressed_data = compress_str(testcase).unwrap();
+                    assert_ne!(compressed_data.len(), testcase.len());
+                    let uncompressed_data = uncompress_str(&compressed_data[..]).unwrap();
+                    assert_eq!(testcase, uncompressed_data)
+                }
+            }
         }
 
-        #[cfg(test)]
-        mod tests {
+        mod blob {
+            //! This isolates what it takes to read and write blobs in the database.
             use super::*;
+            use std::io::{Read, Write};
 
-            #[test]
-            fn compress_uncompress() {
-                let testcase = include_str!("db/schema.sql");
-                let compressed_data = compress_str(testcase).unwrap();
-                assert_ne!(compressed_data.len(), testcase.len());
-                let uncompressed_data = uncompress_str(&compressed_data[..]).unwrap();
-                assert_eq!(testcase, uncompressed_data)
+            /// Writes a *blob* into the database. This is specific to `sqlite3`.
+            ///
+            /// # Arguments
+            ///
+            /// * `tx` is the transaction used to write to the database.
+            /// * `table` is the table that will hold the *blob*.
+            /// * `column` is the database column defined as a *blob*.
+            /// * `rid` is the row identifier of the *blob*.
+            pub(super) fn write(tx: &Transaction, history: &[u8], table: &str, column: &str, rid: i64) -> Result<()> {
+                match tx.blob_open(rusqlite::DatabaseName::Main, table, column, rid, false) {
+                    Ok(mut blob) => match blob.write_all(history) {
+                        Ok(_) => Ok(()),
+                        Err(err) => {
+                            let reason = format!("Error writing blob {}({}) ({})", table, column, err);
+                            Err(Error::from(reason))
+                        }
+                    },
+                    Err(err) => {
+                        let reason = format!("Error opening blob writer on {}({}) ({})", table, column, err);
+                        Err(Error::from(reason))
+                    }
+                }
             }
 
-            #[test]
-            fn blob() {
-                // house cleaning
-                // let db_name = "temp.db";
-                // if std::path::PathBuf::from(db_name).exists() {
-                //     std::fs::remove_file(db_name).unwrap();
-                // }
-                // let conn = db_connection(Some("temp.db")).unwrap();
-                let mut conn = db_connection(None).unwrap();
-                // create a test db
-                let schema = r#"
+            /// Read a *blob* from the database. This is specific to `sqlite3`.
+            ///
+            /// # Arguments
+            ///
+            /// * `conn` is the database connection that will be used.
+            /// * `table` is the table that will hold the *blob*.
+            /// * `column` is the database column defined as a *blob*.
+            /// * `rid` is the row identifier of the *blob*.
+            pub(super) fn read(conn: &Connection, table: &str, column: &str, rid: i64) -> Result<Vec<u8>> {
+                match conn.blob_open(rusqlite::DatabaseName::Main, table, column, rid, true) {
+                    Ok(mut blob) => {
+                        let mut compressed_data: Vec<u8> = vec![0; blob.len()];
+                        match blob.read_exact(&mut compressed_data[..]) {
+                            Ok(_) => Ok(compressed_data),
+                            Err(err) => {
+                                let reason = format!("Error reading blob {}({}) ({})", table, column, err);
+                                Err(Error::from(reason))
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        let reason = format!("Error opening blob reader on {}({}) ({})", table, column, err);
+                        Err(Error::from(reason))
+                    }
+                }
+            }
+
+            #[cfg(test)]
+            mod tests {
+                use super::*;
+
+                #[test]
+                fn blob() {
+                    // house cleaning
+                    // let db_name = "temp.db";
+                    // if std::path::PathBuf::from(db_name).exists() {
+                    //     std::fs::remove_file(db_name).unwrap();
+                    // }
+                    // let conn = db_connection(Some("temp.db")).unwrap();
+                    let mut conn = db_connection(None).unwrap();
+                    // create a test db
+                    let schema = r#"
                 CREATE TABLE example
                 (
                     id INTEGER PRIMARY KEY,
                     mid INTEGER NOT NULL,
                     data BLOB
                 );"#;
-                conn.execute_batch(schema).unwrap();
-                // compress up some data
-                let testcase = include_str!("db/schema.sql");
-                let compressed = compress_str(testcase).unwrap();
-                // now insert the data
-                let size = compressed.len();
-                let row_id;
-                {
-                    let tx = conn.transaction().unwrap();
-                    let insert = "INSERT INTO example (mid, data) VALUES (?1, ?2)";
-                    tx.execute(insert, (1, ZeroBlob(size as i32))).unwrap();
-                    row_id = tx.last_insert_rowid();
-                    write_blob(&tx, &compressed[..], "example", "data", row_id).unwrap();
-                    tx.commit().unwrap();
+                    conn.execute_batch(schema).unwrap();
+                    // compress up some data
+                    let testcase = include_str!("db/schema.sql");
+                    let compressed = compression::compress_str(testcase).unwrap();
+                    // now insert the data
+                    let size = compressed.len();
+                    let row_id;
+                    {
+                        let tx = conn.transaction().unwrap();
+                        let insert = "INSERT INTO example (mid, data) VALUES (?1, ?2)";
+                        tx.execute(insert, (1, ZeroBlob(size as i32))).unwrap();
+                        row_id = tx.last_insert_rowid();
+                        write(&tx, &compressed[..], "example", "data", row_id).unwrap();
+                        tx.commit().unwrap();
+                    }
+                    let compressed_data = read(&conn, "example", "data", row_id).unwrap();
+                    assert_eq!(compressed, compressed_data);
+                    let uncompressed_data = compression::uncompress_str(&compressed_data[..]).unwrap();
+                    assert_eq!(testcase, uncompressed_data);
                 }
-                let compressed_data = read_blob(&conn, "example", "data", row_id).unwrap();
-                assert_eq!(compressed, compressed_data);
-                let uncompressed_data = uncompress_str(&compressed_data[..]).unwrap();
-                assert_eq!(testcase, uncompressed_data);
             }
         }
     }
@@ -1409,23 +1581,19 @@ mod v1 {
         //! The [DataAdapter] implementation using a normalized datbase schema.
         use super::*;
         use crate::{
-            backend::{
-                filesys::{archive_name, ArchiveData},
-                DataAdapter, Error, Result,
-            },
+            backend::{filesys::ArchiveData, DataAdapter, Error, Result},
             prelude::{
                 DailyHistories, DailyHistory, DataCriteria, DateRange, HistoryDates, HistorySummaries, Location,
             },
         };
         use rusqlite::{named_params, Transaction};
-        use toolslib::stopwatch::StopWatch;
 
         /// Create the *normalized* version of the data adapter.
         ///
         /// # Arguments
         ///
         /// * `weather_dir` is the weather data directory name.
-        pub(crate) fn create(weather_dir: WeatherDir) -> Result<Box<dyn DataAdapter>> {
+        pub(crate) fn data_adapter(weather_dir: WeatherDir) -> Result<Box<dyn DataAdapter>> {
             let data_adapter = NormalizedDataAdapter(weather_dir);
             Ok(Box::new(data_adapter))
         }
@@ -1497,52 +1665,14 @@ mod v1 {
         /// The `SQL` used to insert normalized data into the database.
         const INSERT_SQL: &str = r#"
             INSERT INTO daily (
-                mid,
-                temp_high,
-                temp_high_t,
-                temp_low,
-                temp_low_t,
-                temp_max,
-                temp_max_t,
-                temp_min,
-                temp_min_t,
-                wind_speed,
-                wind_gust,
-                wind_gust_t,
-                wind_bearing,
-                cloud_cover,
-                uv_index,
-                uv_index_t,
-                summary,
-                humidity,
-                dew_point,
-                sunrise_t,
-                sunset_t,
-                moon_phase
+                mid, temp_high, temp_high_t, temp_low, temp_low_t, temp_max, temp_max_t, temp_min, temp_min_t,
+                wind_speed, wind_gust, wind_gust_t, wind_bearing, cloud_cover, uv_index, uv_index_t,
+                summary, humidity, dew_point, sunrise_t, sunset_t, moon_phase
             )
             VALUES (
-                :mid,
-                :temp_high,
-                :temp_high_t,
-                :temp_low,
-                :temp_low_t,
-                :temp_max,
-                :temp_max_t,
-                :temp_min,
-                :temp_min_t,
-                :wind_speed,
-                :wind_gust,
-                :wind_gust_t,
-                :wind_bearing,
-                :cloud_cover,
-                :uv_index,
-                :uv_index_t,
-                :summary,
-                :humidity,
-                :dew_point,
-                :sunrise_t,
-                :sunset_t,
-                :moon_phase
+                :mid, :temp_high, :temp_high_t, :temp_low, :temp_low_t, :temp_max, :temp_max_t, :temp_min, :temp_min_t,
+                :wind_speed, :wind_gust, :wind_gust_t, :wind_bearing, :cloud_cover, :uv_index, :uv_index_t, 
+                :summary, :humidity, :dew_point, :sunrise_t, :sunset_t, :moon_phase
             )"#;
 
         /// Loads the database based on the *normalized* implementation of weather data.
@@ -1551,114 +1681,19 @@ mod v1 {
         ///
         /// * `conn` is the database connection that will be used.
         /// * `weather_dir` is the weather data directory.
-        pub(super) fn load(conn: &mut Connection, weather_dir: &WeatherDir) -> Result<()> {
-            log::info!("  full");
-            let size_estimate = size_estimate(conn, "daily")?;
-            let mut histories_loaded: usize = 0;
-            let mut overall_time = StopWatch::start_new();
-            for (lid, alias) in locations::id_aliases(conn)? {
-                let mut archive_load = StopWatch::start_new();
-                let file = weather_dir.get_file(&archive_name(&alias));
-                let archive = WeatherArchive::open(&alias, file)?;
-                let mut tx = conn.transaction()?;
-                let history_count = load_archive(&mut tx, lid, &archive, size_estimate)?;
-                tx.commit()?;
-                archive_load.stop();
-                let per_msec = ((history_count as f64 / archive_load.elapsed().as_millis() as f64) * 1000.0) as usize;
-                log::debug!("    {}: {} loaded in: {} ({}us/history)", alias, history_count, archive_load, per_msec);
-                histories_loaded += history_count;
-            }
-            overall_time.stop();
-            let per_msec = ((histories_loaded as f64 / overall_time.elapsed().as_millis() as f64) * 1000.0) as usize;
-            log::debug!("    {} histories load time: {} ({}us/history)", histories_loaded, overall_time, per_msec);
-            Ok(())
-        }
-
-        /// Load the contents of a weather data archive into the databaase.
-        ///
-        /// # Arguments
-        ///
-        /// * `tx` is the database transaction that will be used.
-        /// * `lid` is the location primary id history is associated with.
-        /// * `archive` is the weather history archive to load.
-        /// * `fixed_size_estimate` is an estimate of the table overhead to determine the size.
-        fn load_archive(
-            tx: &mut Transaction,
-            lid: i64,
-            archive: &WeatherArchive,
-            fixed_size_estimate: usize,
-        ) -> Result<usize> {
-            let mut data_stmt = tx.prepare_cached(INSERT_SQL)?;
-            let mut md_stmt = tx.prepare_cached(METADATA_SQL)?;
-            let mut histories_loaded = 0;
-            for data in archive.archive_iter(None, false, ArchiveData::new)? {
-                let json = data.json()?;
-                let daily = &json["daily"]["data"][0];
-                if !daily.is_object() {
-                    // not pleased with this pattern but its good enough for now
-                    let reason = format!("{}: Did not find daily history for {}", data.lid, &data.date);
-                    return Err(Error::from(reason));
-                }
-                let size = daily.to_string().len();
-                let summary = daily.get("summary").map_or(None, |v| v.as_str());
-                let store_size = fixed_size_estimate + summary.map_or(0, |s| s.len());
-                md_stmt.execute((lid, &data.date, store_size, size, 0))?;
-                let mid = tx.last_insert_rowid();
-                data_stmt.execute(named_params! {
-                    ":mid": mid,
-                    ":temp_high": daily.get("temperatureHigh").map_or(None, |v| v.as_f64()),
-                    ":temp_high_t": daily.get("temperatureHighTime").map_or(None, |v| v.as_i64()),
-                    ":temp_low": daily.get("temperatureLow").map_or(None, |v| v.as_f64()),
-                    ":temp_low_t": daily.get("temperatureLowTime").map_or(None, |v| v.as_i64()),
-                    ":temp_max": daily.get("temperatureMax").map_or(None, |v| v.as_f64()),
-                    ":temp_max_t": daily.get("temperatureMaxTime").map_or(None, |v| v.as_i64()),
-                    ":temp_min": daily.get("temperatureMin").map_or(None, |v| v.as_f64()),
-                    ":temp_min_t": daily.get("temperatureMinTime").map_or(None, |v| v.as_i64()),
-                    ":wind_speed": daily.get("windSpeed").map_or(None, |v| v.as_f64()),
-                    ":wind_gust": daily.get("windGust").map_or(None, |v| v.as_f64()),
-                    ":wind_gust_t": daily.get("windGustTime").map_or(None, |v| v.as_i64()),
-                    ":wind_bearing": daily.get("windBearing").map_or(None, |v| v.as_i64()),
-                    ":cloud_cover": daily.get("cloudCover").map_or(None, |v| v.as_f64()),
-                    ":uv_index": daily.get("uvIndex").map_or(None, |v| v.as_i64()),
-                    ":uv_index_t": daily.get("uvIndexTime").map_or(None, |v| v.as_i64()),
-                    ":summary": daily.get("summary").map_or(None, |v| v.as_str()),
-                    ":humidity": daily.get("humidity").map_or(None, |v| v.as_f64()),
-                    ":dew_point": daily.get("dewPoint").map_or(None, |v| v.as_f64()),
-                    ":sunrise_t": daily.get("sunriseTime").map_or(None, |v| v.as_i64()),
-                    ":sunset_t": daily.get("sunsetTime").map_or(None, |v| v.as_i64()),
-                    ":moon_phase": daily.get("moonPhase").map_or(None, |v| v.as_f64()),
-                })?;
-                histories_loaded += 1;
-            }
-            Ok(histories_loaded)
+        /// * `threads` is the number of threads to use loading data.
+        pub(super) fn load(weather_dir: &WeatherDir, threads: usize) -> Result<()> {
+            darksky::load(weather_dir, threads)
         }
 
         /// The `SQL` used to select data from the database.
         const SELECT_SQL: &str = r#"
         SELECT
-            l.id AS lid,
-            m.date AS date,
-            d.temp_high AS temp_high,
-            d.temp_high_t AS temp_high_t,
-            d.temp_low AS temp_low,
-            d.temp_low_t AS temp_low_t,
-            d.temp_max AS temp_max,
-            d.temp_max_t AS temp_max_t,
-            d.temp_min AS temp_min,
-            d.temp_min_t AS temp_min_t,
-            d.wind_speed AS wind_speed,
-            d.wind_gust AS wind_gust,
-            d.wind_gust_t AS wind_gust_t,
-            d.wind_bearing AS wind_bearing,
-            d.cloud_cover AS cloud_cover,
-            d.uv_index AS uv_index,
-            d.uv_index_t AS uv_index_t,
-            d.summary AS summary,
-            d.humidity AS humidity,
-            d.dew_point AS dew_point,
-            d.sunrise_t AS sunrise_t,
-            d.sunset_t AS sunset_t,
-            d.moon_phase AS moon_phase
+            l.id AS lid, m.date AS date, d.temp_high AS temp_high, d.temp_high_t AS temp_high_t, d.temp_low AS temp_low, d.temp_low_t AS temp_low_t,
+            d.temp_max AS temp_max, d.temp_max_t AS temp_max_t, d.temp_min AS temp_min, d.temp_min_t AS temp_min_t,
+            d.wind_speed AS wind_speed, d.wind_gust AS wind_gust, d.wind_gust_t AS wind_gust_t, d.wind_bearing AS wind_bearing,
+            d.cloud_cover AS cloud_cover, d.uv_index AS uv_index, d.uv_index_t AS uv_index_t, d.summary AS summary, d.humidity AS humidity,
+            d.dew_point AS dew_point, d.sunrise_t AS sunrise_t, d.sunset_t AS sunset_t, d.moon_phase AS moon_phase
         FROM locations l
             INNER JOIN metadata AS m ON l.id=m.lid
             INNER JOIN daily AS d ON m.id=d.mid
@@ -1668,9 +1703,9 @@ mod v1 {
         "#;
 
         /// Get daily history from the database.
-        /// 
+        ///
         /// # Arguments
-        /// 
+        ///
         /// * `conn` is the database connection that will be used.
         /// * `alias` is the location alias name.
         /// * `date_range` determines the daily history.
@@ -1717,9 +1752,10 @@ mod v1 {
         /// * `conn` is the database connection that will be used.
         /// * `table` is the database table name.
         fn size_estimate(conn: &Connection, table: &str) -> Result<usize> {
-            let mut size_estimate = 0;
+            // the primary id will always be 64 bit
+            let mut size_estimate = 8;
             // this is specific to sqlite3
-            conn.pragma(None, table, "daily", |row| {
+            conn.pragma(None, table, table, |row| {
                 let name: String = row.get("name")?;
                 let column_type: String = row.get("type")?;
                 match column_type.as_str() {
@@ -1740,5 +1776,384 @@ mod v1 {
             })?;
             Ok(size_estimate)
         }
+
+        mod darksky {
+            //! The normalized database archive loader for DarkSky weather data.
+            use super::*;
+            use archive_loader::*;
+            use backend::DarkskyConverter;
+            use std::{
+                sync::mpsc::{Receiver, Sender, TryRecvError},
+                thread, time,
+            };
+
+            /// The data passed through the [ArchiveLoader].
+            #[derive(Debug)]
+            struct LoadMsg {
+                /// The location table identifier.
+                pub lid: i64,
+                /// The size of the daily history
+                pub size: usize,
+                /// The store size of the daily history.
+                pub store_size: usize,
+                /// The daily history.
+                pub history: DailyHistory,
+            }
+
+            /// Take the DarkSky archives and push them into the database.
+            ///
+            /// # Argument
+            ///
+            /// * `weather_dir` is the weather data directory.
+            /// * `threads` is the number of workers to use getting data from archives.
+            pub(crate) fn load(weather_dir: &WeatherDir, threads: usize) -> Result<()> {
+                let conn = db_conn!(weather_dir)?;
+                let size_estimate = size_estimate(&conn, "daily")? + 32;
+                let archives = ArchiveQueue::new(&conn, weather_dir)?;
+                let mut loader: ArchiveLoader<LoadMsg> = ArchiveLoader::new(threads);
+                loader.execute(archives, || Box::new(DarkSkyProducer(size_estimate)), || Box::new(HistoryConsummer(conn)))
+            }
+
+            /// The DarkSky data producer.
+            struct DarkSkyProducer(
+                /// The estimated size of data within the database.
+                usize,
+            );
+            impl DarkSkyProducer {
+                /// Send the history data to the consummer side of the loader.
+                /// 
+                /// # Arguments
+                /// 
+                /// * `lid` is the locations primary id in the database.
+                /// * `history` is the data that will be sent off to the consummer.
+                /// * `sender` is used to pass data to the collector.
+                fn send_history(&self, lid: i64, history: DailyHistory, sender: &Sender<LoadMsg>) -> Result<()> {
+                    let size = self.0 + history.summary.as_ref().map_or(0, |s| s.len());
+                    let msg = LoadMsg { lid, size, store_size: size, history };
+                    match sender.send(msg) {
+                        Ok(_) => Ok(()),
+                        Err(_) => Err(Error::from("SendError...")),
+                    }
+                }
+            }
+            impl ArchiveProducer<LoadMsg> for DarkSkyProducer {
+                /// This is called by the archive producer to get data from the archive.
+                ///
+                /// # Arguments
+                ///
+                /// * `lid` is the locations primary id in the database.
+                /// * `alias` is the locations alias name.
+                /// * `file` is the weather data archive.
+                /// * `sender` is used to pass data to the collector.
+                fn gather(&self, lid: i64, alias: &str, file: WeatherFile, sender: &Sender<LoadMsg>) -> Result<usize> {
+                    let archive = WeatherArchive::open(&alias, file)?;
+                    let mut result = Ok(0);
+                    for data in archive.archive_iter(None, false, ArchiveData::new)? {
+                        let json = data.json()?;
+                        match DailyHistory::from_json(&alias, &data.date, &json) {
+                            Ok(history) => {
+                                self.send_history(lid, history, sender)?;
+                                match result.as_mut() {
+                                    Ok(count) => *count += 1,
+                                    Err(_) => unreachable!("Result is an error and shouldn't be..."),
+                                };
+                            }
+                            Err(err) => {
+                                result = Err(err);
+                                break;
+                            }
+                        }
+                    }
+                    result
+                }
+            }
+
+            /// The database history loader.
+            struct HistoryConsummer(
+                /// The database connection that will be used.
+                Connection,
+            );
+            impl HistoryConsummer {
+                /// Add weather history to the database.
+                ///
+                /// This is a `static` method in order to separate collection from adding data. It can't be
+                /// an instance method because it would require borrowing mutable from an instance already
+                /// mutable.
+                ///
+                /// # Arguments
+                ///
+                /// * `tx` is the transaction associate with the data insertion.
+                /// * `msg` contains the history that will be added to the database.
+                fn insert_history(tx: &mut Transaction, msg: LoadMsg) -> Result<()> {
+                    let mut data_stmt = tx.prepare_cached(INSERT_SQL)?;
+                    let mut md_stmt = tx.prepare_cached(METADATA_SQL)?;
+                    md_stmt.execute(named_params! {
+                        ":lid": msg.lid,
+                        ":date": &msg.history.date,
+                        ":store_size": msg.store_size,
+                        ":size": msg.size,
+                        ":mtime": 0
+                    })?;
+                    let mid = tx.last_insert_rowid();
+                    data_stmt.execute(named_params! {
+                        ":mid": mid,
+                        ":temp_high": msg.history.temperature_high,
+                        ":temp_high_t": msg.history.temperature_high_time,
+                        ":temp_low": msg.history.temperature_low,
+                        ":temp_low_t": msg.history.temperature_low_time,
+                        ":temp_max": msg.history.temperature_max,
+                        ":temp_max_t": msg.history.temperature_max_time,
+                        ":temp_min": msg.history.temperature_min,
+                        ":temp_min_t": msg.history.temperature_min_time,
+                        ":wind_speed": msg.history.wind_speed,
+                        ":wind_gust": msg.history.wind_gust,
+                        ":wind_gust_t": msg.history.wind_gust_time,
+                        ":wind_bearing": msg.history.wind_bearing,
+                        ":cloud_cover": msg.history.cloud_cover,
+                        ":uv_index": msg.history.uv_index,
+                        ":uv_index_t": msg.history.uv_index_time,
+                        ":summary": msg.history.summary,
+                        ":humidity": msg.history.humidity,
+                        ":dew_point": msg.history.dew_point,
+                        ":sunrise_t": msg.history.sunrise_time,
+                        ":sunset_t": msg.history.sunset_time,
+                        ":moon_phase": msg.history.moon_phase,
+                    })?;
+                    Ok(())
+                }
+            }
+            impl ArchiveConsummer<LoadMsg> for HistoryConsummer {
+                /// /// Called by the [ArchiveLoader] to collect the weather history being mined.
+                ///
+                /// # Arguments
+                ///
+                /// * `receiver` is used to collect the weather data.
+                fn collect(&mut self, receiver: Receiver<LoadMsg>) -> Result<usize> {
+                    let mut tx = self.0.transaction()?;
+                    let mut count: usize = 0;
+                    // spin on the receiver until there's no one sending more data
+                    let pause = time::Duration::from_millis(1);
+                    loop {
+                        match receiver.try_recv() {
+                            Ok(msg) => {
+                                Self::insert_history(&mut tx, msg)?;
+                                count += 1;
+                            }
+                            Err(err) => match err {
+                                TryRecvError::Empty => thread::sleep(pause),
+                                TryRecvError::Disconnected => break,
+                            },
+                        }
+                    }
+                    // commit the load
+                    match tx.commit() {
+                        Ok(_) => Ok(count),
+                        Err(err) => {
+                            let reason = format!("Error commiting load transaction ({}).", &err);
+                            Err(Error::from(reason))
+                        }
+                    }
+                }
+            }
+        }
     }
+
+    
+    pub(super) mod archive_loader {
+        //! A threaded history data loader.
+        // use crate::backend::db::v1::document::load;
+
+        use super::*;
+        use std::{
+            marker::PhantomData,
+            sync::{mpsc, Arc, Mutex},
+            thread,
+        };
+        use toolslib::{fmt::commafy, stopwatch::StopWatch};
+
+        /// A helper to log elapsed load times.
+        macro_rules! log_elapsed {
+            ($what:expr, $count:expr, $stopwatch:expr) => {{
+                let per_msec = $count as f64 / $stopwatch.millis() as f64;
+                log::debug!(
+                    "{:?} {}: {} loaded in {} ({:0.3}history/ms).",
+                    thread::current().id(),
+                    $what,
+                    commafy($count),
+                    $stopwatch,
+                    per_msec
+                );
+            }};
+        }
+
+        /// The trait used by the [ArchiveLoader] to gather data from a weather archive.
+        pub(super) trait ArchiveProducer<T> {
+            /// The *producer* side of the archive data.
+            ///
+            /// # Arguments
+            ///
+            /// * `sender` is used to hand off the gathered archive data.
+            /// * `archives` is a collection of archives to gather data from.
+            fn gather(&self, lid: i64, alias: &str, file: WeatherFile, sender: &mpsc::Sender<T>) -> Result<usize>;
+            /// Trait boiler plate that gets archive metadata from the queue and calls the data extractor.
+            fn send(&self, sender: mpsc::Sender<T>, archives: Arc<ArchiveQueue>) {
+                while let Some(md) = archives.next() {
+                    let mut load_time = StopWatch::start_new();
+                    let filename = md.file.filename.clone();
+                    match self.gather(md.lid, &md.alias, md.file, &sender) {
+                        Ok(count) => {
+                            load_time.stop();
+                            self.log_elapsed(&md.alias, count, &load_time);
+                        }
+                        Err(err) => {
+                            log::error!("{:?} error loading archive {} ({}).", thread::current().id(), filename, &err);
+                            break;
+                        }
+                    }
+                }
+            }
+            /// Trait boiler plate that logs elapsed time for the producer.
+            /// 
+            /// # Arguments
+            /// 
+            /// * `description` tersely describes the elapsed time.
+            /// * `count` is the number of items mined from the archive.
+            /// * `load_time` is how long the gather took.
+            fn log_elapsed(&self, description: &str, count: usize, load_time: &StopWatch) {
+                log_elapsed!(description, count, load_time);
+            }
+        }
+
+        /// The trait used by the [ArchiveLoader] to collect the data gathered from weather archives.
+        pub(super) trait ArchiveConsummer<T> {
+            /// The *consummer* side of the archive data.
+            ///
+            /// # Arguments
+            ///
+            /// * `receiver` is used to collect the gathered archive data.
+            fn collect(&mut self, receiver: mpsc::Receiver<T>) -> Result<usize>;
+            /// The boiler plate side for the *consummer* of archive data.
+            ///
+            /// # Arguments
+            ///
+            /// * `receiver` is used to collect the gathered archive data.
+            fn receive(&mut self, receiver: mpsc::Receiver<T>) {
+                let mut load_time = StopWatch::start_new();
+                match self.collect(receiver) {
+                    Ok(count) => {
+                        load_time.stop();
+                        self.log_elapsed("Overall", count, &load_time);
+                    }
+                    Err(err) => {
+                        let reason = format!("ArchiveConsummer collect error ({})", &err);
+                        log::error!("{}", reason);
+                    }
+                }
+            }
+            /// Trait boiler plate that logs elapsed time for the consummer.
+            /// 
+            /// # Arguments
+            /// 
+            /// * `description` tersely describes the elapsed time.
+            /// * `count` is the number of items mined from the archive.
+            /// * `load_time` is how long the collection took.
+            fn log_elapsed(&self, description: &str, count: usize, load_time: &StopWatch) {
+                log_elapsed!(description, count, load_time);
+            }
+        }
+
+        /// A threaded framework that gathers data from archives.
+        #[derive(Debug)]
+        pub(super) struct ArchiveLoader<T> {
+            /// The number of threads to use.
+            threads: usize,
+            /// The **'I need to be associated with a type`** compiler hack.
+            phantom: PhantomData<T>,
+        }
+        impl<T: 'static + Send> ArchiveLoader<T> {
+            /// Create a new instance of the loader.
+            ///
+            /// # Arguments
+            ///
+            /// * `threads` is the number of threads to use gathering data.
+            pub(super) fn new(threads: usize) -> ArchiveLoader<T> {
+                Self { threads, phantom: PhantomData }
+            }
+            /// Gather data from a collection of archives.
+            ///
+            /// # Arguments
+            ///
+            /// * `archives` is the collection of archives data will be gathered from.
+            /// * `producer` is used to create the threads that gather archive data.
+            /// * `consummer` is used to create the collector of archive data.
+            pub(super) fn execute<P, C>(&mut self, archives: ArchiveQueue, producer: P, consummer: C) -> Result<()>
+            where
+                P: Fn() -> Box<dyn ArchiveProducer<T> + Send>,
+                C: FnOnce() -> Box<dyn ArchiveConsummer<T> + Send>,
+            {
+                // start up the threads that gather data
+                let archives = Arc::new(archives);
+                let (sender, receiver) = mpsc::channel::<T>();
+                let mut handles = Vec::with_capacity(self.threads);
+                for _ in 0..self.threads {
+                    let producer = producer();
+                    let sender = sender.clone();
+                    let archive_queue = archives.clone();
+                    let handle = thread::spawn(move || {
+                        producer.send(sender, archive_queue);
+                    });
+                    handles.push(handle);
+                }
+                // now that the threads are running close down the sender
+                drop(sender);
+                // run the consummer
+                consummer().receive(receiver);
+                // now cleanup the threads
+                for handle in handles {
+                    let thread_id = handle.thread().id();
+                    match handle.join() {
+                        Ok(_) => (),
+                        Err(_) => {
+                            log::error!("Error joining with thread ({:?})", thread_id);
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        /// The archive metadata used by the [ArchiveQueue].
+        #[derive(Debug)]
+        pub(super) struct ArchiveQueueMd {
+            /// The database primary id of the weather location.
+            pub lid: i64,
+            /// The weather location alias name.
+            pub alias: String,
+            /// The weather data archive.
+            pub file: WeatherFile,
+        }
+
+        /// A thread-safe collection of weather archive metadata used by the [ArchiveLoader].
+        #[derive(Debug)]
+        pub(super) struct ArchiveQueue(Mutex<Vec<ArchiveQueueMd>>);
+        impl ArchiveQueue {
+            pub fn new(conn: &Connection, weather_dir: &WeatherDir) -> Result<Self> {
+                let id_alias_files: Vec<ArchiveQueueMd> = locations::id_aliases(conn)?
+                    .into_iter()
+                    .map(|(lid, alias)| {
+                        let file = weather_dir.archive(&alias);
+                        ArchiveQueueMd { lid, alias, file }
+                    })
+                    .collect();
+                Ok(Self(Mutex::new(id_alias_files)))
+            }
+            pub fn next(&self) -> Option<ArchiveQueueMd> {
+                match self.0.lock() {
+                    Ok(mut guard) => guard.pop(),
+                    Err(err) => err.into_inner().pop(),
+                }
+            }
+        }
+    }
+
 }

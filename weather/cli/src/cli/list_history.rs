@@ -9,6 +9,7 @@
 //!
 use super::{ReportGenerator, ReportWriter, Result as CliResult};
 use clap::Args;
+use toolslib::stopwatch::StopWatch;
 use weather_lib::prelude::{DataCriteria, HistoryDates, WeatherData};
 
 #[derive(Args, Debug)]
@@ -58,7 +59,10 @@ impl ReportGenerator for ListHistory {
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
     fn text_output(&self, weather_api: &WeatherData, report_writer: &ReportWriter) -> CliResult<()> {
-        text::output(self.get_location_dates(weather_api)?, report_writer)
+        let stopwatch = StopWatch::start_new();
+        let result = text::output(self.get_location_dates(weather_api)?, report_writer);
+        log::info!("overall time {}", &stopwatch);
+        result
     }
     /// Generates a JSON report for list history.
     ///

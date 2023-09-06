@@ -10,7 +10,7 @@ The library that implements weather data in `Rust`. The library consists of the 
 
 ## The backend Module
 
-This module contains the weather data implementation. It defines an data adapter trait the weather data `API` uses to access data. There are currently two (2) main implementations of the data adapter.
+This module contains the weather data implementation. It defines a `DataAdapter` trait the weather data `API` uses as the implementation. There are currently two (2) main implementations of the data adapter.
 
 * A `Zip` archive implementation in the `filesys` module.
 * A database implementation in the `db` module.
@@ -37,6 +37,7 @@ The database implementation is built on top of `Sqlite3`. There are three (3) im
 #### Inner module description.
 
 * `admin` contains the `API` used to initialize and load the database.
+* `archive_loader` contains a thread based database loader used by the `documents` and `normalized` module. It uses the *Rust* `mpsc` module to separate archive data mining from database updates.
 * `query` contains the database queries that are not specific to a model's implementation.
 * `locations` contains the models to read and write location data.
 * `hybrid` contains the *hybrid* model implementation.

@@ -14,6 +14,7 @@
 //!
 use super::{ReportGenerator, ReportWriter, Result as CliResult};
 use clap::Args;
+use toolslib::stopwatch::StopWatch;
 use weather_lib::prelude::{DataCriteria, HistorySummaries, WeatherData};
 
 #[derive(Args, Debug)]
@@ -65,7 +66,10 @@ impl ReportGenerator for ListSummary {
     /// * `report_writer` - The output manager that controls where report output will be sent.
     ///
     fn text_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter) -> CliResult<()> {
-        text::output(self.get_history_summary(weather_data)?, report_writer)
+        let stopwatch = StopWatch::start_new();
+        let result = text::output(self.get_history_summary(weather_data)?, report_writer);
+        log::info!("overall time {}", &stopwatch);
+        result
     }
     /// Generates a JSON report for list summary.
     ///

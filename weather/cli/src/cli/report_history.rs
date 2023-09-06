@@ -155,7 +155,7 @@ impl ReportGenerator for ReportHistory {
         let stopwatch = StopWatch::start_new();
         let data = self.get_daily_histories(weather_data)?;
         let result = text::output(data, &self.args, report_writer);
-        eprintln!("rh took {}", &stopwatch);
+        log::info!("overall time: {}", &stopwatch);
         result
     }
     /// Generates a JSON report for report history.

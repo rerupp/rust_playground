@@ -278,7 +278,7 @@ mod init_cmd {
     const DOCUMENT: &str = "DOCUMENT";
 
     /// The command argument id for running in a full normalized mode.
-    const FULL: &str = "FULL";
+    const NORMALIZE: &str = "NORMALIZE";
 
     /// The command argument id indicating the database schema should be dropped.
     const DROP: &str = "DROP";
@@ -288,6 +288,9 @@ mod init_cmd {
 
     /// The command argument id indicating `JSON` documents should be compressed in the database.
     const COMPRESS: &str = "COMPRESS";
+
+    /// The command argument id controlling how many threads to use.
+    const THREADS: &str = "THREADS";
 
     /// Get the initialize sub-command definition.
     pub fn get() -> Command {
@@ -309,17 +312,28 @@ mod init_cmd {
                 Arg::new(COMPRESS)
                     .long("compress")
                     .action(ArgAction::SetTrue)
-                    .conflicts_with_all([HYBRID, FULL])
+                    .conflicts_with_all([HYBRID, NORMALIZE])
                     .requires(DOCUMENT)
                     .help("The JSON history data will be compressed in the database."),
             )
             .arg(
-                Arg::new(FULL)
-                    .long("full")
+                Arg::new(NORMALIZE)
+                    .long("normalize")
                     .action(ArgAction::SetTrue)
                     .help("Configure the database to be fully relational."),
             )
-            .group(ArgGroup::new("DB_MODE").args([HYBRID, DOCUMENT, FULL]).required(false))
+            .arg(
+                Arg::new(THREADS)
+                    .long("threads")
+                    .action(ArgAction::Set)
+                    .value_parser(thread_count_parse)
+                    .default_value("1")
+                    .requires(DOCUMENT)
+                    .requires(NORMALIZE)
+                    .conflicts_with(HYBRID)
+                    .help("The number of threads to use"),
+            )
+            .group(ArgGroup::new("DB_MODE").args([HYBRID, DOCUMENT, NORMALIZE]).required(false))
             .arg(Arg::new(DROP).long("drop").action(ArgAction::SetTrue).help("Drops the database before initializing."))
             .arg(Arg::new(LOAD).long("load").action(ArgAction::SetTrue).help("Load the database after initializing."))
     }
@@ -333,19 +347,42 @@ mod init_cmd {
     pub fn dispatch(admin_api: WeatherAdmin, args: &ArgMatches) -> Result<()> {
         let hybrid = bool_option!(args, HYBRID);
         let document = bool_option!(args, DOCUMENT);
-        let full = bool_option!(args, FULL);
+        let full = bool_option!(args, NORMALIZE);
         let db_config = match (hybrid, document, full) {
             (false, true, false) => {
                 let compress = bool_option!(args, COMPRESS);
                 DbConfig::document(compress)
             }
-            (false, false, true) => DbConfig::full(),
+            (false, false, true) => DbConfig::normalize(),
             _ => DbConfig::hybrid(),
         };
+        // this is safe, the thread parse already confirms it's a usize
+        let threads: usize = args.get_one::<String>(THREADS).map_or(1, |m| m.parse::<usize>().unwrap());
         let drop = bool_option!(args, DROP);
         let load = bool_option!(args, LOAD);
-        admin_api.init(db_config, drop, load)?;
+        admin_api.init(db_config, drop, load, threads as usize)?;
         Ok(())
+    }
+
+    /// Used by the command parser to validate the thread count argument.
+    ///
+    /// Yeah, I know you can use a built in but the error message was bugging me.
+    ///
+    /// # Arguments
+    ///
+    /// * `dirname` is the weather directory command argument.
+    fn thread_count_parse(count_arg: &str) -> result::Result<String, String> {
+        match count_arg.parse::<usize>() {
+            Ok(count) => {
+                let max_threads = 16;
+                if count <= max_threads {
+                    Ok(count_arg.to_string())
+                } else {
+                    Err(format!("thread count is limited to {}.", max_threads))
+                }
+            }
+            Err(_) => Err(format!("{} is not a number.", count_arg)),
+        }
     }
 
     #[cfg(test)]
@@ -364,7 +401,7 @@ mod init_cmd {
                     let testcase = $args.subcommand_matches(NAME).unwrap();
                     assert_eq!(bool_option!(testcase, HYBRID), $hybrid);
                     assert_eq!(bool_option!(testcase, DOCUMENT), $document);
-                    assert_eq!(bool_option!(testcase, FULL), $full);
+                    assert_eq!(bool_option!(testcase, NORMALIZE), $full);
                     assert_eq!(bool_option!(testcase, LOAD), $load);
                     assert_eq!(bool_option!(testcase, DROP), $drop);
                     assert_eq!(bool_option!(testcase, COMPRESS), $compress);
@@ -379,7 +416,7 @@ mod init_cmd {
             let parsed_args = testcli!(vec!["test", NAME, "--document", "--compress"]).unwrap();
             verify!(parsed_args, false, true, false, false, false, true);
             assert!(testcli!(vec!["test", NAME, "--compress"]).is_err());
-            let parsed_args = testcli!(vec!["test", NAME, "--full"]).unwrap();
+            let parsed_args = testcli!(vec!["test", NAME, "--normalize"]).unwrap();
             verify!(parsed_args, false, false, true, false, false, false);
             let parsed_args = testcli!(vec!["test", NAME, "--load", "--drop"]).unwrap();
             verify!(parsed_args, false, false, false, true, true, false);
@@ -438,18 +475,26 @@ mod stat_cmd {
     ///
     /// * `admin_api` is the backend weather adminstation `API`.
     pub fn dispatch(admin_api: WeatherAdmin) -> Result<()> {
-        let db_config = admin_api.stat()?;
-        let database_mode = if db_config.hybrid {
-            "hybrid"
-        } else if db_config.document {
-            match db_config.compress {
-                true => "document (compressed)",
-                false => "document",
+        let db_stat = admin_api.stat()?;
+        match db_stat.config {
+            Some(config) => {
+                let database_mode = if config.hybrid {
+                    "hybrid"
+                } else if config.document {
+                    match config.compress {
+                        true => "document (compressed)",
+                        false => "document",
+                    }
+                } else {
+                    "normalized"
+                };
+                println!("Database mode: {}", database_mode);
+                println!("size: {}", toolslib::mbufmt!(db_stat.size));
             }
-        } else {
-            "full"
-        };
-        eprintln!("Database mode: {}", database_mode);
+            None => {
+                println!("Weather data has not been initialized to use a database.");
+            }
+        }
         Ok(())
     }
 }

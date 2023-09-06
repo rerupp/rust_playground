@@ -13,7 +13,7 @@ path = "src/admin.rs"
 chrono.workspace = true
 chrono-tz.workspace = true
 # clap = { version = "3.1.18", features = ["derive"] }
-clap = "4.1"
+clap = "4.4"
 log.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

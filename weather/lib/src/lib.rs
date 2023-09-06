@@ -94,10 +94,15 @@ mod api {
     ///
     /// * `dirname` is the weather data directory name.
     pub fn db_weather_data(dirname: &str) -> Result<WeatherData> {
-        let adapter = backend::db::create_db_data_adapter(dirname)?;
+        let adapter = backend::db::data_adapter(dirname)?;
         Ok(WeatherData(adapter))
     }
 
+    macro_rules! log_elapsed {
+        ($what:expr, $stopwatch:expr) => {
+            log::info!("WeatherData: {} {}", $what, $stopwatch)
+        };
+    }
     /// The weather data `API`.
     pub struct WeatherData(
         /// The backend implementation of weather data.
@@ -115,7 +120,7 @@ mod api {
         pub fn get_daily_history(&self, criteria: DataCriteria, history_range: DateRange) -> Result<DailyHistories> {
             let stopwatch = toolslib::stopwatch::StopWatch::start_new();
             let data = self.0.daily_histories(DataCriteria::from(criteria), history_range)?;
-            eprintln!("daily_histories: {}", &stopwatch);
+            log_elapsed!("get_daily_history", &stopwatch);
             Ok(data)
         }
         /// Get the history dates for locations.
@@ -126,7 +131,7 @@ mod api {
         pub fn get_history_dates(&self, criteria: DataCriteria) -> Result<Vec<HistoryDates>> {
             let stopwatch = toolslib::stopwatch::StopWatch::start_new();
             let data = self.0.history_dates(criteria)?;
-            eprintln!("history_dates: {}", &stopwatch);
+            log_elapsed!("get_history_dates", &stopwatch);
             Ok(data)
         }
         /// Get a summary of location weather data.
@@ -137,7 +142,7 @@ mod api {
         pub fn get_history_summary(&self, criteria: DataCriteria) -> Result<Vec<HistorySummaries>> {
             let stopwatch = toolslib::stopwatch::StopWatch::start_new();
             let data = self.0.history_summaries(DataCriteria::from(criteria))?;
-            eprintln!("history_summary: {}", &stopwatch);
+            log_elapsed!("get_history_summary", &stopwatch);
             Ok(data)
         }
         /// Get the weather location metadata.
@@ -148,7 +153,7 @@ mod api {
         pub fn get_locations(&self, criteria: DataCriteria) -> Result<Vec<Location>> {
             let stopwatch = toolslib::stopwatch::StopWatch::start_new();
             let data = self.0.locations(criteria)?;
-            eprintln!("locations: {}", &stopwatch);
+            log_elapsed!("get_locations", &stopwatch);
             Ok(data)
         }
     }
@@ -162,7 +167,7 @@ mod admin_api {
             db::admin,
             filesys::{weather_dir, WeatherDir},
         },
-        entities::DbConfig,
+        entities::{DbConfig, DbInfo},
         Result,
     };
 
@@ -189,8 +194,8 @@ mod admin_api {
         /// * `db_config` is the database configuration.
         /// * `drop` when `true` will delete the schema before initialization.
         /// * `load` when `true` will load weather data into the database.
-        pub fn init(&self, db_config: DbConfig, drop: bool, load: bool) -> Result<()> {
-            admin::init_db(&self.0, db_config, drop, load)?;
+        pub fn init(&self, db_config: DbConfig, drop: bool, load: bool, threads: usize) -> Result<()> {
+            admin::init_db(&self.0, db_config, drop, load, threads)?;
             Ok(())
         }
         /// Deletes the weather database schema and optionally deletes the database.
@@ -203,7 +208,7 @@ mod admin_api {
             Ok(())
         }
         /// Provides information about the weather data database.
-        pub fn stat(&self) -> crate::Result<DbConfig> {
+        pub fn stat(&self) -> crate::Result<DbInfo> {
             let db_config = admin::stat(&self.0)?;
             Ok(db_config)
         }
@@ -261,8 +266,6 @@ mod entities {
     /// The data that comprises a location.
     #[derive(Debug)]
     pub struct Location {
-        /// The unique id of a location.
-        pub id: String,
         /// The name of a location.
         pub name: String,
         /// A unique nickname of a location.
@@ -483,23 +486,32 @@ mod entities {
         /// Configures the database to use `JSON` document as the history data source.
         pub document: bool,
         /// Configures the database to use a full relational model as the history data source.
-        pub full: bool,
+        pub normalize: bool,
         /// When using documents, controls if the `JSON` documents will be compressed or not.
         pub compress: bool,
     }
     impl DbConfig {
         /// A helper that creates the database configuration when running in the hybrid mode.
         pub fn hybrid() -> Self {
-            Self { hybrid: true, document: false, full: false, compress: false }
+            Self { hybrid: true, document: false, normalize: false, compress: false }
         }
         /// A helper that creates the database configuration when running in the document mode.
         pub fn document(compress: bool) -> Self {
-            Self { hybrid: false, document: true, full: false, compress }
+            Self { hybrid: false, document: true, normalize: false, compress }
         }
         /// A helper that creates the database configuration when running in a fully relational mode.
-        pub fn full() -> Self {
-            Self { hybrid: false, document: false, full: true, compress: false }
+        pub fn normalize() -> Self {
+            Self { hybrid: false, document: false, normalize: true, compress: false }
         }
+    }
+
+    /// The database information.
+    #[derive(Debug)]
+    pub struct DbInfo {
+        /// The database configuration.
+        pub config: Option<DbConfig>,
+        /// The size of the database.
+        pub size: usize,
     }
 
     #[cfg(test)]
