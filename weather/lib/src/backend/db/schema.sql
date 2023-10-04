@@ -60,36 +60,31 @@ CREATE TABLE IF NOT EXISTS documents
 -- cover the metadata id with an index
 CREATE INDEX IF NOT EXISTS idx_documents_mid on documents(mid);
 
--- create the daily history table
-CREATE TABLE IF NOT EXISTS daily
+CREATE TABLE IF NOT EXISTS history
 (
     id INTEGER PRIMARY KEY,
     mid INTEGER NOT NULL,
     temp_high REAL,
-    temp_high_t INTEGER,
     temp_low REAL,
-    temp_low_t INTEGER,
-    temp_max REAL,
-    temp_max_t INTEGER,
-    temp_min REAL,
-    temp_min_t INTEGER,
-    wind_speed REAL,
-    wind_gust REAL,
-    wind_gust_t INTEGER,
-    wind_bearing INTEGER,
-    cloud_cover REAL,
-    uv_index INTEGER,
-    uv_index_t INTEGER,
-    summary TEXT,
-    humidity REAL,
+    temp_mean REAL,
     dew_point REAL,
+    humidity REAL,
     sunrise_t INTEGER,
     sunset_t INTEGER,
+    cloud_cover REAL,
     moon_phase REAL,
-    FOREIGN KEY (mid) REFERENCES metadata(id)
+    uv_index REAL,
+    wind_speed REAL,
+    wind_gust REAL,
+    wind_dir INTEGER,
+    visibility REAL,
+    pressure REAL,
+    precip REAL,
+    precip_prob REAL,
+    precip_type TEXT,
+    description TEXT
 );
-
 -- cover the metadata id with an index
-CREATE INDEX IF NOT EXISTS idx_daily_mid on daily(mid);
+CREATE INDEX IF NOT EXISTS idx_history_mid on history(mid);
 
 COMMIT;

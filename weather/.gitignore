@@ -4,6 +4,9 @@
 .idea
 *.code-workspace
 weather_data
+weather.toml
 ,*
 *.log
 *.lis
+*.txt
+**/uscities.csv

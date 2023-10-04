@@ -7,296 +7,33 @@
 //! Currently only 1 location can reported at a time however the command does
 //! support case-insensitive searching.
 //!
-use super::{parse_date, ReportWriter};
+use super::{ReportHistory, get_writer, Result};
 use chrono::prelude::*;
-use clap::Args;
-use std::result;
+use weather_lib::prelude::{DailyHistories, DataCriteria, WeatherData};
+use std::io::Write;
 
-use toolslib::{date_time::get_tz_ts, stopwatch::StopWatch};
-use weather_lib::prelude::{DataCriteria, DateRange, DailyHistories, WeatherData};
-
-use super::{ReportGenerator, Result};
-
-/// The CLI flags and arguments specific to the report history subcommand.
-#[derive(Args, Debug)]
-pub struct CommandArgs {
-    /// Include daily temperatures in the report (default).
-    ///
-    /// The report will include the following:
-    ///
-    /// * history date
-    /// * high temperature and time of day
-    /// * low temperature and time of day
-    #[clap(short, long, value_parser, conflicts_with = "all")]
-    temp: bool,
-    /// Include daily conditions in the report.
-    ///
-    /// The report will include the following:
-    ///
-    /// * history date
-    /// * wind speed, wind bearing, maximum wind gust, and wind gust time of day
-    /// * percentage of cloud cover
-    /// * UV index and time of day
-    #[clap(short, long, value_parser, conflicts_with = "all")]
-    cnd: bool,
-    /// Include min/max temperatures in the report.
-    ///
-    /// The report will include the following:
-    ///
-    /// * history date
-    /// * maximum temperature and time of day
-    /// * minimum temperature and time of day
-    #[clap(short, long, value_parser, conflicts_with = "all")]
-    max: bool,
-    /// Include a summary of the weather in the report.
-    ///
-    /// The report will include the following:
-    ///
-    /// * history date
-    /// * sunrise and sunset time of day
-    /// * moon phase
-    /// * max humidity
-    /// * dew point temperature
-    /// * a summary of the daily weather
-    #[clap(short, long, value_parser, conflicts_with = "all")]
-    sum: bool,
-    /// Include all data in the generated report.
-    ///
-    /// This is equivalent of supplying the flags `-tcms` on the command line.
-    #[clap(short, long, value_parser)]
-    all: bool,
-    /// The location used for the details report.
-    // #[clap(forbid_empty_values = true, validator = validate_location)]
-    #[clap(value_parser = validate_location)]
-    location: String,
-    /// The starting date for the report.
-    ///
-    /// The form of the date can be YYYY-MM-DD, MM-DD-YYYY, or MMM-DD-YYYY
-    /// where MMM is Jan, Feb, etc.
-    #[clap(value_parser = validate_date_string)]
-    start: String,
-    /// The ending date for the report
-    ///
-    /// The form of the date can be YYYY-MM-DD, MM-DD-YYYY, or MMM-DD-YYYY
-    /// where MMM is Jan, Feb, etc. If the argument is not given history will
-    /// be generated for the start date only.
-    #[clap(value_parser = validate_date_string)]
-    ends: Option<String>,
-}
-/// The implementation for report history command flags.
-impl CommandArgs {
-    /// Returns true if the `temp` flag is supplied, `all` has been selected, or no report flags supplied.
-    fn is_temp(&self) -> bool {
-        self.temp || self.all || !(self.max || self.cnd || self.sum)
-    }
-    /// Returns true if the `max` flag or `all` flag has been supplied.
-    fn is_max(&self) -> bool {
-        self.max || self.all
-    }
-    /// Returns true if the `cnd` flag or `all` flag has been supplied.
-    fn is_cnd(&self) -> bool {
-        self.cnd || self.all
-    }
-    /// Returns true if the `sum` flag or `all` flag has been supplied.
-    fn is_sum(&self) -> bool {
-        self.sum || self.all
-    }
-}
-
-/// The contents of the report history command.
-pub struct ReportHistory {
-    /// The command arguments.
-    args: CommandArgs,
-}
-impl ReportHistory {
-    /// Create a new instance of the report history command.
-    ///
-    /// # Arguments
-    ///
-    /// * `args` - the command arguments association with the instance.
-    ///
-    pub fn new(args: CommandArgs) -> ReportHistory {
-        ReportHistory { args }
-    }
-    /// Returns the daily history details used to generate reports.
-    ///
-    /// # Arguments
-    ///
-    /// `weather_data` - the `domain` instance that will be used.
-    ///
-    fn get_daily_histories(&self, weather_data: &WeatherData) -> Result<DailyHistories> {
-        let lower = parse_date(&self.args.start)?;
-        let upper = if let Some(ends) = &self.args.ends { parse_date(&ends)? } else { lower.clone() };
-        // let query =
-        //     LocationCriteria { location_filter: vec![self.args.location.clone()], sort: false, case_insensitive: true };
-        // let history_query = DailyHistoryQuery { history_range: HistoryRange::new(lower, upper) };
-        let history_range = DateRange::new(lower, upper);
-        let criteria = DataCriteria { filters: vec![self.args.location.clone()], icase: true, sort: true };
-        // println!("{:?} {:?}" query, history_query);
-        // let location_daily_histories = weather_data.get_daily_history(query, history_query)?;
-        let location_daily_histories = weather_data.get_daily_history(criteria, history_range)?;
-        Ok(location_daily_histories)
-    }
-}
-
-/// The implementation of the `ReportGenerator` trait for list history.
-impl ReportGenerator for ReportHistory {
-    /// Generates a text based report for report history.
-    ///
-    /// An error will be returned if there are issues getting the location history details from
-    /// the domain.
-    ///
-    /// # Arguments
-    ///
-    /// * `weather_data` - The domain API used to access weather data.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
-    ///
-    fn text_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter) -> Result<()> {
-        let stopwatch = StopWatch::start_new();
-        let data = self.get_daily_histories(weather_data)?;
-        let result = text::output(data, &self.args, report_writer);
-        log::info!("overall time: {}", &stopwatch);
-        result
-    }
-    /// Generates a JSON report for report history.
-    ///
-    /// An error will be returned if there are issues getting the location history details from
-    /// the domain.
-    ///
-    /// # Arguments
-    ///
-    /// * `weather_data` - The domain API used to access weather data.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
-    /// * `pretty` - if `true` JSON output will be formatted with space and newlines.
-    ///
-    fn json_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter, pretty: bool) -> Result<()> {
-        let data = self.get_daily_histories(weather_data)?;
-        json::output(data, &self.args, report_writer, pretty)
-    }
-    /// Generates a CSV report for report history.
-    ///
-    /// An error will be returned if there are issues getting the location history details from
-    /// the domain.
-    ///
-    /// # Arguments
-    ///
-    /// * `weather_data` - The domain API used to access weather data.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
-    ///
-    fn csv_output(&self, weather_data: &WeatherData, report_writer: &ReportWriter) -> Result<()> {
-        let data = self.get_daily_histories(weather_data)?;
-        csv::output(data, &self.args, report_writer)
-    }
-}
-
-/// Used by the parser to validate the location name.
-///
-/// This will protect the location name containing either leading space, trailing space or not being
-/// provided.
-///
-/// # Arguments
-///
-/// * `location` - the location string provided on the command line.
-fn validate_location(location: &str) -> result::Result<String, String> {
-    if location.is_empty() {
-        Err("The location name cannot be empty.".to_string())
-    } else if location.trim().len() != location.len() {
-        Err("The location name cannot have leading or trailing spaces".to_string())
+pub(in crate::cli) fn execute(weather_data: &WeatherData, cmd_args: ReportHistory) -> Result<()> {
+    let criteria = DataCriteria { filters: vec![cmd_args.location()], icase: true, sort: false };
+    let histories = weather_data.get_daily_history(criteria, cmd_args.date_range())?;
+    let report_args = cmd_args.report_args();
+    let mut writer = get_writer(&report_args)?;
+    if report_args.csv() {
+        csv_report::generate(histories, cmd_args, &mut writer)
+    } else if report_args.json() {
+        json_report::generate(histories, cmd_args, &mut writer)
     } else {
-        // just in case someone forgot to give a location, check to see if it's a date
-        match parse_date(location) {
-            Err(_) => Ok(location.to_string()),
-            _ => Err(format!("The location appears to be a start date...")),
-        }
+        text_report::generate(histories, cmd_args, &mut writer)
     }
 }
 
-/// Used by the parser to validate the date strings that were entered.
-///
-/// Check the [parse date](parse_date) function to see what date string are acceptable.
-///
-/// # Arguments
-///
-/// * `date_str` - the date string that will be validated.
-///
-/// An error will be returned if there are errors validating the date.
-fn validate_date_string(date_str: &str) -> result::Result<String, String> {
-    match parse_date(&date_str) {
-        Ok(_) => Ok(date_str.to_string()),
-        Err(error) => Err(format!("{error}")),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn report_flags() {
-        let mk_testcase = |temp, max, cnd, sum, all| -> CommandArgs {
-            CommandArgs { temp, max, cnd, sum, all, location: "".to_string(), start: "".to_string(), ends: None }
-        };
-        let test_case = mk_testcase(false, false, false, false, false);
-        assert!(test_case.is_temp());
-        assert!(!test_case.is_max());
-        assert!(!test_case.is_cnd());
-        assert!(!test_case.is_sum());
-        let test_case = mk_testcase(true, false, false, false, false);
-        assert!(test_case.is_temp());
-        assert!(!test_case.is_max());
-        assert!(!test_case.is_cnd());
-        assert!(!test_case.is_sum());
-        let test_case = mk_testcase(false, true, false, false, false);
-        assert!(!test_case.is_temp());
-        assert!(test_case.is_max());
-        assert!(!test_case.is_cnd());
-        assert!(!test_case.is_sum());
-        let test_case = mk_testcase(false, false, true, false, false);
-        assert!(!test_case.is_temp());
-        assert!(!test_case.is_max());
-        assert!(test_case.is_cnd());
-        assert!(!test_case.is_sum());
-        let test_case = mk_testcase(false, false, false, true, false);
-        assert!(!test_case.is_temp());
-        assert!(!test_case.is_max());
-        assert!(!test_case.is_cnd());
-        assert!(test_case.is_sum());
-        let test_case = mk_testcase(false, false, false, false, true);
-        assert!(test_case.is_temp());
-        assert!(test_case.is_max());
-        assert!(test_case.is_cnd());
-        assert!(test_case.is_sum());
-    }
-
-    #[test]
-    fn validate_dates() {
-        assert!(validate_date_string("2022-7-15").is_ok());
-        assert!(validate_date_string("7-1-2022").is_ok());
-        assert!(validate_date_string("7-1-22").is_ok());
-        assert!(validate_date_string("jul-15-2022").is_ok());
-        assert!(validate_date_string("Jul-15-2022").is_ok());
-        assert!(validate_date_string("JUL-15-2022").is_ok());
-        assert!(validate_date_string("JUL-15-22").is_ok());
-        assert!(validate_date_string("JULY-15-22").is_err());
-    }
-
-    #[test]
-    fn validate_locations() {
-        assert!(validate_location(" name").is_err());
-        assert!(validate_location("name ").is_err());
-        assert!(validate_location("name").is_ok());
-    }
-}
-
-/// The report history text based reporting implementation.
-///
-/// This module utilizes the `text_reports` module to generate reports.
-///
-mod text {
+mod text_report {
+    /// The report history text based reporting implementation.
+    ///
+    /// This module utilizes the `text_reports` module to generate reports.
     use super::*;
     use chrono_tz::*;
     use toolslib::{
-        date_time::isodate,
+        date_time::{get_tz_ts, isodate},
         fmt::fmt_float,
         rptcols, rptrow,
         text::{write_strings, Report},
@@ -308,83 +45,73 @@ mod text {
     ///
     /// # Arguments
     ///
-    /// * `location_daily_histories` - The location and history details that will be reported.
-    /// * `report_args` - The report arguments to allow selection of the report details.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
+    /// * `daily_histories` is the locations weather history that will be reported.
+    /// * `args` are the report command arguments.
+    /// * `writer` is where report output will be sent.
     ///
-    pub fn output(
-        location_daily_histories: DailyHistories,
-        report_args: &CommandArgs,
-        report_writer: &ReportWriter,
-    ) -> Result<()> {
+    pub(super) fn generate(daily_histories: DailyHistories, args: ReportHistory, writer: &mut impl Write) -> Result<()> {
         let mut columns = rptcols!(^);
         let mut header1 = rptrow!(_,);
         let mut header2 = rptrow!("Date");
-        if report_args.is_temp() {
-            columns.append(&mut rptcols!(^, ^, ^, ^,));
-            header1.append(&mut rptrow!("High", "High", "Low", "Low"));
-            header2.append(&mut rptrow!("Temperature", "Temperature TOD", "Temperature", "Temperature TOD"));
+        if args.temps() {
+            columns.append(&mut rptcols!(^, ^, ^, ^));
+            header1.append(&mut rptrow!(+ "-", "Temperature", + "-", "Dew"));
+            header2.append(&mut rptrow!("High", "Low", "Mean", "Point"));
         }
-        if report_args.is_max() {
-            columns.append(&mut rptcols!(^, ^, ^, ^,));
-            header1.append(&mut rptrow!("Maximum", "Maximum", "Minimum", "Minimum"));
-            header2.append(&mut rptrow!("Temperature", "Temperature TOD", "Temperature", "Temperature TOD"));
+        if args.precipitation() {
+            columns.append(&mut rptcols!(^, ^, ^, ^, ^));
+            header1.append(&mut rptrow!("Cloud", _, + "-", "Precipitation", + "-"));
+            header2.append(&mut rptrow!("Cover", "Humidity", "Chance", "Amount", "Type"));
         }
-        if report_args.is_cnd() {
-            columns.append(&mut rptcols!(>, >, ^, ^, ^, ^, ^,));
-            header1.append(&mut rptrow!("Wind", "Wind", "Wind", "Wind", "Cloud", "UV", "UV"));
-            header2.append(&mut rptrow!("Speed", "Gust", "Gust TOD", "Bearing", "Cover", "Index", "Index TOD"));
+        if args.conditions() {
+            columns.append(&mut rptcols!(>, >, ^, ^, ^,));
+            header1.append(&mut rptrow!(+ "-", "Wind", + "-", _, "UV"));
+            header2.append(&mut rptrow!("Speed", "Gust", "Bearing", "Pressure", "Index"));
         }
-        if report_args.is_sum() {
-            columns.append(&mut rptcols!(^, ^, ^, ^, ^, <,));
-            header1.append(&mut rptrow!(_, _, "Moon", _, "Dew"));
-            header2.append(&mut rptrow!("Sunrise", "Sunset", "Phase", "Humidity", "Point", = "Summary"));
-        };
+        if args.summary() {
+            columns.append(&mut rptcols!(^, ^, ^, <,));
+            header1.append(&mut rptrow!(_, _, "Moon", _,));
+            header2.append(&mut rptrow!("Sunrise", "Sunset", "Phase", = "Summary"));
+        }
         let mut report = Report::from(columns);
         report.header(header1).header(header2).separator("-");
 
-        let tz: Tz = location_daily_histories.location.tz.parse().unwrap();
-        for daily_history in location_daily_histories.daily_histories {
-            let mut row = rptrow!(isodate(&daily_history.date));
-            if report_args.is_temp() {
-                let high = fmt_temperature(&daily_history.temperature_high);
-                let high_t = fmt_hhmm(&daily_history.temperature_high_time, &tz);
-                let low = fmt_temperature(&daily_history.temperature_low);
-                let low_t = fmt_hhmm(&daily_history.temperature_low_time, &tz);
-                row.append(&mut rptrow!(high, high_t, low, low_t));
+        let tz: Tz = daily_histories.location.tz.parse().unwrap();
+        for history in daily_histories.histories {
+            let mut row = rptrow!(isodate(&history.date));
+            if args.temps() {
+                let high = fmt_temperature(&history.temperature_high);
+                let low = fmt_temperature(&history.temperature_low);
+                let mean = fmt_temperature(&history.temperature_mean);
+                let dew_point = fmt_temperature(&history.dew_point);
+                row.append(&mut rptrow!(high, low, mean, dew_point));
             }
-            if report_args.is_max() {
-                let max = fmt_temperature(&daily_history.temperature_max);
-                let max_t = fmt_hhmm(&daily_history.temperature_max_time, &tz);
-                let min = fmt_temperature(&daily_history.temperature_min);
-                let min_t = fmt_hhmm(&daily_history.temperature_min_time, &tz);
-                row.append(&mut rptrow!(max, max_t, min, min_t));
+            if args.precipitation() {
+                let cloudy = fmt_percent(&history.cloud_cover);
+                let humidity = fmt_percent(&history.humidity);
+                let chance = fmt_percent(&history.precipitation_chance);
+                let amount = fmt_float(&history.precipitation_amount, 2);
+                let precip = history.precipitation_type.as_ref().map_or(Default::default(), |t| t.as_str());
+                row.append(&mut rptrow!(cloudy, humidity, chance, amount, precip))
             }
-            if report_args.is_cnd() {
-                let wind = fmt_float(&daily_history.wind_speed, 1);
-                let gust = fmt_float(&daily_history.wind_gust, 1);
-                let gust_t = fmt_hhmm(&daily_history.wind_gust_time, &tz);
-                let bearing = fmt_wind_bearing(&daily_history.wind_bearing);
-                let cloudy = fmt_percent(&daily_history.cloud_cover);
-                let uv = fmt_uv_index(&daily_history.uv_index);
-                let uv_t = fmt_hhmm(&daily_history.uv_index_time, &tz);
-                row.append(&mut rptrow!(wind, gust, gust_t, bearing, cloudy, uv, uv_t));
+            if args.conditions() {
+                let wind = fmt_float(&history.wind_speed, 1);
+                let gust = fmt_float(&history.wind_gust, 1);
+                let bearing = fmt_wind_bearing(&history.wind_direction);
+                let uv = fmt_uv_index(&history.uv_index);
+                let pressure = fmt_float(&history.pressure, 1);
+                row.append(&mut rptrow!(wind, gust, bearing, pressure, uv));
             }
-            if report_args.is_sum() {
-                let sunrise_t = fmt_hhmm(&daily_history.sunrise_time, &tz);
-                let sunset_t = fmt_hhmm(&daily_history.sunset_time, &tz);
-                let moon_p = fmt_moon_phase(&daily_history.moon_phase);
-                let humidity = fmt_percent(&daily_history.humidity);
-                let dew_point = fmt_temperature(&daily_history.dew_point);
-                let summary = match &daily_history.summary {
-                    Some(s) => s.as_str(),
-                    None => "",
-                };
-                row.append(&mut rptrow!(sunrise_t, sunset_t, moon_p, humidity, dew_point, = summary));
+            if args.summary() {
+                let sunrise_t = fmt_hhmm(&history.sunrise, &tz);
+                let sunset_t = fmt_hhmm(&history.sunset, &tz);
+                let moon_p = fmt_moon_phase(&history.moon_phase);
+                let summary = history.description.as_ref().map_or(Default::default(), |s| s.as_str());
+                row.append(&mut rptrow!(sunrise_t, sunset_t, moon_p, = summary));
             }
             report.text(row);
         }
-        write_strings(&mut report_writer.get_writer()?, report.into_iter())?;
+        write_strings(writer, report.into_iter())?;
         Ok(())
     }
 
@@ -417,7 +144,7 @@ mod text {
             let index = ((*bearing as f64 / 22.5) + 0.5) as usize % 16;
             BEARINGS[index]
         } else {
-            ""
+            Default::default()
         }
     }
 
@@ -437,7 +164,7 @@ mod text {
     fn fmt_percent(option: &Option<f64>) -> String {
         match option {
             Some(value) => format!("{:>3}%", ((value * 100.0) + 0.5) as i64),
-            None => "".to_string(),
+            None => Default::default(),
         }
     }
 
@@ -451,7 +178,7 @@ mod text {
     fn fmt_temperature(t: &Option<f64>) -> String {
         match t {
             Some(temperature) => format!("{:>-5.1}", temperature),
-            None => "".to_string(),
+            None => Default::default(),
         }
     }
 
@@ -465,12 +192,8 @@ mod text {
     /// If the option is `None` an empty string will be returned.
     ///
     #[inline]
-    fn fmt_hhmm(t: &Option<i64>, tz: &Tz) -> String {
-        match t {
-            // Some(datetime) => format!("{}", tz.timestamp(*datetime, 0).format("%H:%M")),
-            Some(ts) => get_tz_ts(*ts, tz).format("%H:%M").to_string(),
-            None => "".to_string(),
-        }
+    fn fmt_hhmm(date_time: &Option<NaiveDateTime>, tz: &Tz) -> String {
+        date_time.map_or(Default::default(), |dt| get_tz_ts(dt.timestamp(), tz).format("%H:%M").to_string())
     }
 
     /// Returns a UV index as a human readable string.
@@ -487,10 +210,11 @@ mod text {
     ///
     /// If the option is `None` or the value 0, an empty string will be returned.
     ///
-    fn fmt_uv_index(option: &Option<i64>) -> &'static str {
+    fn fmt_uv_index(option: &Option<f64>) -> &'static str {
         let mut uv_index = "";
         if let Some(value) = option {
-            if *value > 0 {
+            let value = value.round() as i64;
+            if value > 0 {
                 uv_index = match value {
                     1 | 2 => "low",
                     3 | 4 | 5 => "moderate",
@@ -550,12 +274,14 @@ mod text {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use toolslib::date_time::{get_date, get_time};
 
         #[test]
         fn hhmm() {
             let tz: Tz = "America/Phoenix".parse().unwrap();
             assert_eq!(fmt_hhmm(&None, &tz), "");
-            assert_eq!(fmt_hhmm(&Some(1588371720), &tz), "15:22");
+            let date_time = NaiveDateTime::new(get_date(2023, 9, 23), get_time(22, 22, 22));
+            assert_eq!(fmt_hhmm(&Some(date_time), &tz), "15:22");
         }
 
         #[test]
@@ -633,19 +359,19 @@ mod text {
         #[test]
         fn uv_index() {
             assert_eq!(fmt_uv_index(&None), "");
-            assert_eq!(fmt_uv_index(&Some(0)), "");
-            assert_eq!(fmt_uv_index(&Some(1)), "low");
-            assert_eq!(fmt_uv_index(&Some(2)), "low");
-            assert_eq!(fmt_uv_index(&Some(3)), "moderate");
-            assert_eq!(fmt_uv_index(&Some(4)), "moderate");
-            assert_eq!(fmt_uv_index(&Some(5)), "moderate");
-            assert_eq!(fmt_uv_index(&Some(6)), "high");
-            assert_eq!(fmt_uv_index(&Some(7)), "high");
-            assert_eq!(fmt_uv_index(&Some(8)), "very high");
-            assert_eq!(fmt_uv_index(&Some(9)), "very high");
-            assert_eq!(fmt_uv_index(&Some(10)), "very high");
-            assert_eq!(fmt_uv_index(&Some(11)), "extreme");
-            assert_eq!(fmt_uv_index(&Some(12)), "extreme");
+            assert_eq!(fmt_uv_index(&Some(0.0)), "");
+            assert_eq!(fmt_uv_index(&Some(1.0)), "low");
+            assert_eq!(fmt_uv_index(&Some(2.0)), "low");
+            assert_eq!(fmt_uv_index(&Some(3.0)), "moderate");
+            assert_eq!(fmt_uv_index(&Some(4.0)), "moderate");
+            assert_eq!(fmt_uv_index(&Some(5.0)), "moderate");
+            assert_eq!(fmt_uv_index(&Some(6.0)), "high");
+            assert_eq!(fmt_uv_index(&Some(7.0)), "high");
+            assert_eq!(fmt_uv_index(&Some(8.0)), "very high");
+            assert_eq!(fmt_uv_index(&Some(9.0)), "very high");
+            assert_eq!(fmt_uv_index(&Some(10.0)), "very high");
+            assert_eq!(fmt_uv_index(&Some(11.0)), "extreme");
+            assert_eq!(fmt_uv_index(&Some(12.0)), "extreme");
         }
 
         #[test]
@@ -672,17 +398,15 @@ mod text {
     }
 }
 
-/// The report history JSON based reporting implementation.
-///
-/// This module utilizes the `serde_json` dependency to generate reports.
-///
-mod json {
+mod json_report {
+    /// The report history JSON based reporting implementation.
+    ///
+    /// This module utilizes the `serde_json` dependency to generate reports.
+    use super::*;
     use chrono_tz::*;
     use serde_json::map::Map;
     use serde_json::{json, to_string, to_string_pretty, Value};
-    use toolslib::date_time::isodate;
-
-    use super::*;
+    use toolslib::date_time::{get_tz_ts, isodate};
 
     /// Generates the report history JSON based report.
     ///
@@ -690,60 +414,52 @@ mod json {
     ///
     /// # Arguments
     ///
-    /// * `location_daily_histories` - The location and history details that will be reported.
-    /// * `report_args` - The report arguments to allow selection of the report details.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
+    /// * `daily_histories` is the locations weather history that will be reported.
+    /// * `args` are the report command arguments.
+    /// * `writer` is where report output will be sent.
     ///
-    pub fn output(
-        location_daily_histories: DailyHistories,
-        report_args: &CommandArgs,
-        report_writer: &ReportWriter,
-        pretty: bool,
-    ) -> Result<()> {
-        let mut histories: Vec<Map<String, Value>> = vec![];
-        let tz: Tz = location_daily_histories.location.tz.parse().unwrap();
-        for daily_history in location_daily_histories.daily_histories {
-            let mut history = Map::new();
-            let mut add = |key: &str, value: Value| history.insert(key.to_string(), value);
-            add("date", json!(isodate(&daily_history.date)));
-            if report_args.is_temp() {
-                add("temperatureHigh", float_value(&daily_history.temperature_high));
-                add("temperatureHighTime", datetime_value(&daily_history.temperature_high_time, &tz));
-                add("temperatureLow", float_value(&daily_history.temperature_low));
-                add("temperatureLowTime", datetime_value(&daily_history.temperature_low_time, &tz));
+    pub(super) fn generate(daily_histories: DailyHistories, args: ReportHistory, writer: &mut impl Write) -> Result<()> {
+        let mut values: Vec<Map<String, Value>> = vec![];
+        let tz: Tz = daily_histories.location.tz.parse().unwrap();
+        for history in daily_histories.histories {
+            let mut value = Map::new();
+            let mut add = |key: &str, v: Value| value.insert(key.to_string(), v);
+            add("date", json!(isodate(&history.date)));
+            if args.temps() {
+                add("temperatureHigh", float_value(&history.temperature_high));
+                add("temperatureLow", float_value(&history.temperature_low));
+                add("temperatureMean", float_value(&history.temperature_mean));
+                add("dewPoint", float_value(&history.dew_point));
             }
-            if report_args.is_max() {
-                add("temperatureMax", float_value(&daily_history.temperature_max));
-                add("temperatureMaxTime", datetime_value(&daily_history.temperature_max_time, &tz));
-                add("temperatureMin", float_value(&daily_history.temperature_min));
-                add("temperatureMinTime", datetime_value(&daily_history.temperature_min_time, &tz));
+            if args.precipitation() {
+                add("cloudCover", float_value(&history.cloud_cover));
+                add("humidity", float_value(&history.humidity));
+                add("precip", float_value(&history.precipitation_amount));
+                add("precipChance", float_value(&history.precipitation_chance));
+                add("precipType", string_value(&history.precipitation_type));
             }
-            if report_args.is_cnd() {
-                add("windSpeed", float_value(&daily_history.wind_speed));
-                add("windGust", float_value(&daily_history.wind_gust));
-                add("windGustTime", datetime_value(&daily_history.wind_gust_time, &tz));
-                add("windBearing", int_value(&daily_history.wind_bearing));
-                add("cloudCover", float_value(&daily_history.cloud_cover));
-                add("uvIndex", int_value(&daily_history.uv_index));
-                add("uvIndexTime", datetime_value(&daily_history.uv_index_time, &tz));
+            if args.conditions() {
+                add("windSpeed", float_value(&history.wind_speed));
+                add("windGust", float_value(&history.wind_gust));
+                add("windBearing", int_value(&history.wind_direction));
+                add("uvIndex", float_value(&history.uv_index));
+                add("pressure", float_value(&history.pressure));
             }
-            if report_args.is_sum() {
-                add("sunrise", datetime_value(&daily_history.sunrise_time, &tz));
-                add("sunset", datetime_value(&daily_history.sunset_time, &tz));
-                add("moonPhase", float_value(&daily_history.moon_phase));
-                add("humidity", float_value(&daily_history.humidity));
-                add("dewPoint", float_value(&daily_history.dew_point));
-                add("summary", string_value(&daily_history.summary));
+            if args.summary() {
+                add("sunrise", datetime_value(&history.sunrise, &tz));
+                add("sunset", datetime_value(&history.sunset, &tz));
+                add("moonPhase", float_value(&history.moon_phase));
+                add("summary", string_value(&history.description));
             }
-            histories.push(history);
+            values.push(value);
         }
         let root = json!({
-            "location": location_daily_histories.location.name,
+            "location": daily_histories.location.name,
             "type": Value::String("daily_history".to_string()),
-            "history": json![histories],
+            "history": json![values],
         });
-        let as_text = if pretty { to_string_pretty } else { to_string };
-        writeln!(report_writer.get_writer()?, "{}", as_text(&root)?)?;
+        let as_text = if args.report_args().pretty() { to_string_pretty } else { to_string };
+        writeln!(writer, "{}", as_text(&root)?)?;
         Ok(())
     }
 
@@ -768,11 +484,11 @@ mod json {
     /// * `option` - the timestamp used to create the IETF datetime value.
     /// * `tz` - the timezone associated with the timestamp.
     ///
-    fn datetime_value(option: &Option<i64>, tz: &Tz) -> Value {
+    fn datetime_value(option: &Option<NaiveDateTime>, tz: &Tz) -> Value {
         match option {
-            Some(timestamp) => {
+            Some(date_time) => {
                 // let dt: DateTime<Tz> = tz.timestamp(*timestamp, 0);
-                let dt: DateTime<Tz> = get_tz_ts(*timestamp, tz);
+                let dt: DateTime<Tz> = get_tz_ts(date_time.timestamp(), tz);
                 let iso8601 = dt.to_rfc3339_opts(SecondsFormat::Secs, true);
                 json!(iso8601)
             }
@@ -831,12 +547,14 @@ mod json {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use toolslib::date_time::{get_date, get_time};
 
         #[test]
         fn datetime() {
             let tz: Tz = "America/Los_Angeles".parse().unwrap();
             assert_eq!(datetime_value(&None, &tz), Value::Null);
-            assert_eq!(datetime_value(&Some(1588399200), &tz), "2020-05-01T23:00:00-07:00".to_string());
+            let dt = NaiveDateTime::new(get_date(2023, 9, 23), get_time(23, 23, 23));
+            assert_eq!(datetime_value(&Some(dt), &tz), "2023-09-23T16:23:23-07:00".to_string());
         }
 
         #[test]
@@ -856,12 +574,12 @@ mod json {
     }
 }
 
-/// The report history CSV based reporting implementation.
-///
-/// This module utilizes the `csv` dependency to generate reports.
-///
-mod csv {
-    use super::{CommandArgs, DateTime, DailyHistories, ReportWriter, Result, SecondsFormat};
+mod csv_report {
+    /// The report history CSV based reporting implementation.
+    ///
+    /// This module utilizes the `csv` dependency to generate reports.
+    use super::*;
+    use chrono::NaiveDateTime;
     use chrono_tz::*;
     use csv::Writer;
     use toolslib::date_time::{get_tz_ts, isodate};
@@ -872,78 +590,68 @@ mod csv {
     ///
     /// # Arguments
     ///
-    /// * `location_daily_histories` - The location and history details that will be reported.
-    /// * `report_args` - The report arguments to allow selection of the report details.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
+    /// * `daily_histories` is the locations weather history that will be reported.
+    /// * `args` are the report command arguments.
+    /// * `writer` is where report output will be sent.
     ///
-    pub fn output(
-        location_daily_histories: DailyHistories,
-        report_args: &CommandArgs,
-        report_writer: &ReportWriter,
-    ) -> Result<()> {
-        let mut writer = Writer::from_writer(report_writer.get_writer()?);
+    pub(super) fn generate(daily_histories: DailyHistories, args: ReportHistory, writer: &mut impl Write) -> Result<()> {
+        let mut writer = Writer::from_writer(writer);
         let mut labels: Vec<&str> = vec!["date"];
-        if report_args.is_temp() {
+        if args.temps() {
             labels.push("temperatureHigh");
-            labels.push("temperatureHighTime");
             labels.push("temperatureLow");
-            labels.push("temperatureLowTime");
+            labels.push("temperatureMean");
+            labels.push("dewPoint");
         }
-        if report_args.is_max() {
-            labels.push("temperatureMax");
-            labels.push("temperatureMaxTime");
-            labels.push("temperatureMin");
-            labels.push("temperatureMinTime");
+        if args.precipitation() {
+            labels.push("cloudCover");
+            labels.push("humidity");
+            labels.push("precip");
+            labels.push("precipChance");
+            labels.push("precipType");
         }
-        if report_args.is_cnd() {
+        if args.conditions() {
             labels.push("windSpeed");
             labels.push("windGust");
-            labels.push("windGustTime");
             labels.push("windBearing");
-            labels.push("cloudCover");
             labels.push("uvIndex");
-            labels.push("uvIndexTime");
+            labels.push("pressure");
         }
-        if report_args.is_sum() {
+        if args.summary() {
             labels.push("sunrise");
             labels.push("sunset");
             labels.push("moonPhase");
-            labels.push("humidity");
-            labels.push("dewPoint");
             labels.push("summary");
         }
         writer.write_record(&labels)?;
-        let tz: Tz = location_daily_histories.location.tz.parse().unwrap();
-        for daily_history in location_daily_histories.daily_histories {
+        let tz: Tz = daily_histories.location.tz.parse().unwrap();
+        for daily_history in daily_histories.histories {
             let mut history = vec![isodate(&daily_history.date)];
-            if report_args.is_temp() {
+            if args.temps() {
                 history.push(float_value(&daily_history.temperature_high));
-                history.push(datetime_value(&daily_history.temperature_high_time, &tz));
                 history.push(float_value(&daily_history.temperature_low));
-                history.push(datetime_value(&daily_history.temperature_low_time, &tz));
+                history.push(float_value(&daily_history.temperature_mean));
+                history.push(float_value(&daily_history.dew_point));
             }
-            if report_args.is_max() {
-                history.push(float_value(&daily_history.temperature_max));
-                history.push(datetime_value(&daily_history.temperature_max_time, &tz));
-                history.push(float_value(&daily_history.temperature_min));
-                history.push(datetime_value(&daily_history.temperature_min_time, &tz));
+            if args.precipitation() {
+                history.push(float_value(&daily_history.cloud_cover));
+                history.push(float_value(&daily_history.humidity));
+                history.push(float_value(&daily_history.precipitation_amount));
+                history.push(float_value(&daily_history.precipitation_chance));
+                history.push(string_value(&daily_history.precipitation_type));
             }
-            if report_args.is_cnd() {
+            if args.conditions() {
                 history.push(float_value(&daily_history.wind_speed));
                 history.push(float_value(&daily_history.wind_gust));
-                history.push(datetime_value(&daily_history.wind_gust_time, &tz));
-                history.push(int_value(&daily_history.wind_bearing));
-                history.push(float_value(&daily_history.cloud_cover));
-                history.push(int_value(&daily_history.uv_index));
-                history.push(datetime_value(&daily_history.uv_index_time, &tz));
+                history.push(int_value(&daily_history.wind_direction));
+                history.push(float_value(&daily_history.uv_index));
+                history.push(float_value(&daily_history.pressure));
             }
-            if report_args.is_sum() {
-                history.push(datetime_value(&daily_history.sunrise_time, &tz));
-                history.push(datetime_value(&daily_history.sunset_time, &tz));
+            if args.summary() {
+                history.push(datetime_value(&daily_history.sunrise, &tz));
+                history.push(datetime_value(&daily_history.sunset, &tz));
                 history.push(float_value(&daily_history.moon_phase));
-                history.push(float_value(&daily_history.humidity));
-                history.push(float_value(&daily_history.dew_point));
-                history.push(string_value(&daily_history.summary));
+                history.push(string_value(&daily_history.description));
             }
             writer.write_record(&history)?;
         }
@@ -971,11 +679,11 @@ mod csv {
     /// * `option` - the timestamp used to create the IETF datetime value.
     /// * `tz` - the timezone associated with the timestamp.
     ///
-    fn datetime_value(option: &Option<i64>, tz: &Tz) -> String {
+    fn datetime_value(option: &Option<NaiveDateTime>, tz: &Tz) -> String {
         match option {
-            Some(timestamp) => {
+            Some(date_time) => {
                 // let dt: DateTime<Tz> = tz.timestamp(*timestamp, 0);
-                let dt: DateTime<Tz> = get_tz_ts(*timestamp, tz);
+                let dt: DateTime<Tz> = get_tz_ts(date_time.timestamp(), tz);
                 dt.to_rfc3339_opts(SecondsFormat::Secs, true)
             }
             None => "".to_string(),
@@ -1033,12 +741,14 @@ mod csv {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use toolslib::date_time::{get_date, get_time};
 
         #[test]
         fn datetime() {
             let tz: Tz = "America/Los_Angeles".parse().unwrap();
             assert_eq!(datetime_value(&None, &tz), "".to_string());
-            assert_eq!(datetime_value(&Some(1588389540), &tz), "2020-05-01T20:19:00-07:00".to_string());
+            let dt = NaiveDateTime::new(get_date(2023, 9, 23), get_time(23, 23, 23));
+            assert_eq!(datetime_value(&Some(dt), &tz), "2023-09-23T16:23:23-07:00".to_string());
         }
 
         #[test]

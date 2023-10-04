@@ -7,19 +7,22 @@
 //!
 //! # History
 //!
-//! My intent was to build something to continue with RUST and after going through the various
-//! tutorials. The `Python` weather data project is based on the ***Dark Sky*** project data.
+//! The `Python` weather data project is based on *DarkSky* weather history data.
 //! Unfortunately the API was purchased by Apple and is no longer publicly available (or at least
-//! free) but I had collected years of data for a dozen or more sites.
+//! free) but I had collected years of data for a dozen or more sites. Initially the `Rust` implementation
+//! faithfully followed the `Python` implementation using the *DarkSky* data.
 //!
-//! Originally the implementation was only file based however I decided to come back through and
-//! add another implementation that uses **SQLite3**.
+//! # October 2023 Version
+//! 
+//! Late summer I came across *Visual Crossings* and their *Timeline* weather history API. It had
+//! most of the historical weather data I was interested in so I decided to support adding weather
+//! history using their API. The biggest change behind this move was storing weather history in a new
+//! `JSON` document format. Both *DarkSky* and *Timeline* historical data are supersets of the data
+//! currently being stored. I decided this was the best approach in case *Timeline* goes away and a new
+//! weather history API needs to be used. 
 
 // Ignore broke links due to --document-private-items not being used.
 #![allow(rustdoc::private_intra_doc_links)]
-
-/// The weather data administation tools.
-// pub(crate) mod admin;
 
 /// The weather data implementation is scoped to the library.
 pub(crate) mod backend;
@@ -29,7 +32,7 @@ pub mod prelude {
     pub use crate::{
         api::WeatherData,
         entities::{
-            DailyHistories, DailyHistory, DataCriteria, DateRange, DateRanges, DbConfig, HistoryDates,
+            DailyHistories, DailyHistory, DataCriteria, DateRange, DateRanges, DbConfig, History, HistoryDates,
             HistorySummaries, HistorySummary, Location,
         },
     };
@@ -75,8 +78,9 @@ pub use api::{archive_weather_data, db_weather_data};
 mod api {
     //! The new version of the weather data API.
 
-    use super::{backend, Result};
+    use super::{backend, Error, Result};
     use crate::prelude::{DailyHistories, DataCriteria, DateRange, HistoryDates, HistorySummaries, Location};
+    use toolslib::stopwatch::StopWatch;
 
     /// Creates the weather data `API` for zip archives.
     ///
@@ -109,6 +113,22 @@ mod api {
         Box<dyn backend::DataAdapter>,
     );
     impl WeatherData {
+        /// Add weather history to a location.
+        ///
+        /// It is an error if more than 1 location is found.
+        ///
+        /// # Arguments
+        ///
+        /// * `criteria` identifies the location.
+        /// * `date_range` covers the history dates returned.
+        pub fn add_history(&self, criteria: DataCriteria, date_range: DateRange) -> Result<usize> {
+            let stopwatch = StopWatch::start_new();
+            let location = self.get_location(&criteria)?;
+            let histories = backend::get_weather_history(&location, &date_range)?;
+            let count = self.0.add_histories(&DailyHistories { location, histories })?;
+            log_elapsed!("add_history", &stopwatch);
+            Ok(count)
+        }
         /// Get daily weather history for a location.
         ///
         /// It is an error if more than 1 location is found.
@@ -118,8 +138,9 @@ mod api {
         /// * `criteria` identifies the location.
         /// * `history_range` covers the history dates returned.
         pub fn get_daily_history(&self, criteria: DataCriteria, history_range: DateRange) -> Result<DailyHistories> {
-            let stopwatch = toolslib::stopwatch::StopWatch::start_new();
-            let data = self.0.daily_histories(DataCriteria::from(criteria), history_range)?;
+            let stopwatch = StopWatch::start_new();
+            let location = self.get_location(&criteria)?;
+            let data = self.0.daily_histories(location, history_range)?;
             log_elapsed!("get_daily_history", &stopwatch);
             Ok(data)
         }
@@ -129,7 +150,7 @@ mod api {
         ///
         /// * `criteria` identifies the locations.
         pub fn get_history_dates(&self, criteria: DataCriteria) -> Result<Vec<HistoryDates>> {
-            let stopwatch = toolslib::stopwatch::StopWatch::start_new();
+            let stopwatch = StopWatch::start_new();
             let data = self.0.history_dates(criteria)?;
             log_elapsed!("get_history_dates", &stopwatch);
             Ok(data)
@@ -140,7 +161,7 @@ mod api {
         ///
         /// * `criteria` identifies the locations.
         pub fn get_history_summary(&self, criteria: DataCriteria) -> Result<Vec<HistorySummaries>> {
-            let stopwatch = toolslib::stopwatch::StopWatch::start_new();
+            let stopwatch = StopWatch::start_new();
             let data = self.0.history_summaries(DataCriteria::from(criteria))?;
             log_elapsed!("get_history_summary", &stopwatch);
             Ok(data)
@@ -151,10 +172,27 @@ mod api {
         ///
         /// * `criteria` identifies the locations of interest.
         pub fn get_locations(&self, criteria: DataCriteria) -> Result<Vec<Location>> {
-            let stopwatch = toolslib::stopwatch::StopWatch::start_new();
+            let stopwatch = StopWatch::start_new();
             let data = self.0.locations(criteria)?;
             log_elapsed!("get_locations", &stopwatch);
             Ok(data)
+        }
+        /// Used internally to get a single location, error otherwise.
+        /// 
+        /// # Arguments
+        /// 
+        /// * `criteria` is the location being searched for.
+        fn get_location(&self, criteria: &DataCriteria) -> Result<Location> {
+            let mut locations = self.get_locations(DataCriteria {
+                filters: criteria.filters.clone(),
+                icase: criteria.icase,
+                sort: criteria.sort,
+            })?;
+            match locations.len() {
+                1 => Ok(locations.pop().unwrap()),
+                0 => Err(Error::from("A location was not found.")),
+                _ => Err(Error::from("Multiple locations were found.")),
+            }
         }
     }
 }
@@ -165,16 +203,17 @@ mod admin_api {
     use super::{
         backend::{
             db::admin,
-            filesys::{weather_dir, WeatherDir},
+            filesys::{migrate_history, weather_dir, MigrateConfig, WeatherDir},
         },
-        entities::{DbConfig, DbInfo},
+        entities::{DataCriteria, DbConfig, DbInfo},
         Result,
     };
+    use std::path::PathBuf;
 
     /// Create an instance of the weather data administration `API`.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `dirname` is the weather data directory pathname.
     pub fn create(dirname: &str) -> crate::Result<WeatherAdmin> {
         Ok(WeatherAdmin(weather_dir(dirname)?))
@@ -188,9 +227,9 @@ mod admin_api {
     );
     impl WeatherAdmin {
         /// Initialize the weather database using the supplied databse configuration.
-        /// 
+        ///
         /// # Arguments
-        /// 
+        ///
         /// * `db_config` is the database configuration.
         /// * `drop` when `true` will delete the schema before initialization.
         /// * `load` when `true` will load weather data into the database.
@@ -199,9 +238,9 @@ mod admin_api {
             Ok(())
         }
         /// Deletes the weather database schema and optionally deletes the database.
-        /// 
+        ///
         /// # Arguments
-        /// 
+        ///
         /// * `delete` when `true` will delete the database file.
         pub fn drop(&self, delete: bool) -> Result<()> {
             admin::drop_db(&self.0, delete)?;
@@ -212,13 +251,25 @@ mod admin_api {
             let db_config = admin::stat(&self.0)?;
             Ok(db_config)
         }
+        /// Convert *DarkSky* archives into [History](crate::entities::History) archives.
+        /// 
+        /// # Arguments
+        /// 
+        /// * `into` identifies the directory where converted archive will be written.
+        /// * `create` indicates the directory should be created if it does not exist.
+        /// * `retain` indicates existing converted archives should not be deleted before adding documents.
+        /// * `criteria` identifies what location archives should be converted.
+        pub fn migrate(&self, into: PathBuf, create: bool, retain: bool, criteria: DataCriteria) -> Result<usize> {
+            let count = migrate_history(MigrateConfig { source: &self.0, create, retain, criteria }, into)?;
+            Ok(count)
+        }
     }
 }
 
 mod entities {
     //! Structures used by the weather data `API`s.
 
-    use chrono::NaiveDate;
+    use chrono::{NaiveDate, NaiveDateTime};
 
     /// Used by front-ends to identify locations.
     #[derive(Debug)]
@@ -237,7 +288,7 @@ mod entities {
         /// The location metadata.
         pub location: Location,
         /// The daily histories for a location.
-        pub daily_histories: Vec<DailyHistory>,
+        pub histories: Vec<History>,
     }
 
     /// A locations history dates.
@@ -255,12 +306,12 @@ mod entities {
         pub location: Location,
         /// The number of weather data histories available.
         pub count: usize,
-        /// The overall size of weather data for a location in bytes (may or may not be available).
+        /// The overall size of weather data in bytes (may or may not be available).
         pub overall_size: Option<usize>,
-        /// The raw size of weather data for a location in bytes (may or may not be available).
+        /// The size in bytes of weather data.
         pub raw_size: Option<usize>,
-        /// The compressed data size of weather data for a location in bytes (may or may not be available).
-        pub compressed_size: Option<usize>,
+        /// The size in bytes of weather data in the backing store.
+        pub store_size: Option<usize>,
     }
 
     /// The data that comprises a location.
@@ -293,13 +344,51 @@ mod entities {
         pub compressed_size: Option<usize>,
     }
 
-    /// A locations weather data history dates.
+    /// The weather history data.
     #[derive(Debug)]
-    pub struct DateRanges {
-        /// The location id.
-        pub location_id: String,
-        /// The location weather history dates, grouped as consecutive date ranges.
-        pub date_ranges: Vec<DateRange>,
+    pub struct History {
+        /// The location alias name.
+        pub alias: String,
+        /// The history date.
+        pub date: NaiveDate,
+        /// The high temperature for the day.
+        pub temperature_high: Option<f64>,
+        /// The low temperature for the day.
+        pub temperature_low: Option<f64>,
+        /// The daily mean temperature.
+        pub temperature_mean: Option<f64>,
+        /// The dew point temperature.
+        pub dew_point: Option<f64>,
+        /// The relative humidity percentage.
+        pub humidity: Option<f64>,
+        /// The chance of rain during the day.
+        pub precipitation_chance: Option<f64>,
+        /// A short description of the type of rain.
+        pub precipitation_type: Option<String>,
+        /// The amount of percipitation for the day.
+        pub precipitation_amount: Option<f64>,
+        /// The daily wind speed.
+        pub wind_speed: Option<f64>,
+        /// The highest wind speed recorded for the day.
+        pub wind_gust: Option<f64>,
+        /// The general direction in degrees.
+        pub wind_direction: Option<i64>,
+        /// The percentage of sky covered by clouds.
+        pub cloud_cover: Option<f64>,
+        /// The daily atmospheric pressus expressed in millibars.
+        pub pressure: Option<f64>,
+        /// The level of ultra violet exposure for the day.
+        pub uv_index: Option<f64>,
+        /// The local time when the sun comes up.
+        pub sunrise: Option<NaiveDateTime>,
+        /// The local time when the sun will set.
+        pub sunset: Option<NaiveDateTime>,
+        /// The moons phase between 0 and 1.
+        pub moon_phase: Option<f64>,
+        /// The distance that can be during the day.
+        pub visibility: Option<f64>,
+        /// A summary of the daily weather.
+        pub description: Option<String>,
     }
 
     /// The daily weather data.
@@ -361,6 +450,20 @@ mod entities {
         };
     }
 
+    /// A locations weather data history dates.
+    #[derive(Debug)]
+    pub struct DateRanges {
+        /// The location id.
+        pub location_id: String,
+        /// The location weather history dates, grouped as consecutive date ranges.
+        pub date_ranges: Vec<DateRange>,
+    }
+    impl DateRanges {
+        pub fn covers(&self, date: &NaiveDate) -> bool {
+            self.date_ranges.iter().any(|date_range| date_range.covers(date))
+        }
+    }
+
     /// A container for a range of dates.
     #[derive(Debug)]
     pub struct DateRange {
@@ -371,9 +474,9 @@ mod entities {
     }
     impl DateRange {
         /// Create a new instance of the date range.
-        /// 
+        ///
         /// # Arguments
-        /// 
+        ///
         /// * `from` is the starting date.
         /// * `thru` is the inclusize end date.
         pub fn new(from: NaiveDate, thru: NaiveDate) -> DateRange {
@@ -453,9 +556,9 @@ mod entities {
 
     #[derive(Debug)]
     /// Create the DateRange iterator structure.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `from` is the starting date.
     /// * `thru` is the inclusive end date.
     pub struct DateRangeIterator {

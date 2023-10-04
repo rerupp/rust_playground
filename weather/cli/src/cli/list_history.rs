@@ -6,96 +6,32 @@
 //!
 //! The command allows locations to be filtered. The filtering is case insensitive
 //! and will match either the start of the location name or alias.
-//!
-use super::{ReportGenerator, ReportWriter, Result as CliResult};
-use clap::Args;
-use toolslib::stopwatch::StopWatch;
+use super::{get_writer, ListHistory, Result};
+use std::io::Write;
 use weather_lib::prelude::{DataCriteria, HistoryDates, WeatherData};
 
-#[derive(Args, Debug)]
-/// The command arguments for the list history command.
-pub struct CommandArgs {
-    /// Filter output to these locations (Optional).
-    locations: Vec<String>,
-}
-
-/// The contents of the list history command.
-pub struct ListHistory {
-    /// The command arguments.
-    args: CommandArgs,
-}
-
-impl ListHistory {
-    /// Create a new instance of the list history command.
-    ///
-    /// # Arguments
-    ///
-    /// * `args` - the command arguments association with the instance.
-    ///
-    pub fn new(args: CommandArgs) -> ListHistory {
-        ListHistory { args }
-    }
-    /// Get the history details used to generate reports.
-    ///
-    /// # Arguments
-    ///
-    /// `weather_data` - the `domain` instance that will be used.
-    ///
-    fn get_location_dates(&self, weather_data: &WeatherData) -> CliResult<Vec<HistoryDates>> {
-        let criteria = DataCriteria { filters: self.args.locations.clone(), icase: true, sort: true };
-        Ok(weather_data.get_history_dates(criteria)?)
+pub(in crate::cli) fn execute(weather_data: &WeatherData, cmd_args: ListHistory) -> Result<()> {
+    let histories = weather_data.get_history_dates(DataCriteria {
+        filters: cmd_args.criteria_args().locations().clone(),
+        icase: true,
+        sort: true,
+    })?;
+    let report_args = cmd_args.report_args();
+    let mut writer = get_writer(&report_args)?;
+    if report_args.csv() {
+        csv_report::generate(histories, &mut writer)
+    } else if report_args.json() {
+        json_report::generate(histories, &mut writer, report_args.pretty())
+    } else {
+        text_report::generate(histories, &mut writer)
     }
 }
 
-/// The implementation of the `ReportGenerator` trait for list history.
-impl ReportGenerator for ListHistory {
-    /// Generates a text based report for list history.
+mod text_report {
+    /// The list history text based reporting implementation.
     ///
-    /// An error will be returned if there are issues getting location history dates from the domain.
+    /// This module utilizes the `text_reports` module to generate reports.
     ///
-    /// # Arguments
-    ///
-    /// * `weather_data` - The domain API used to access weather data.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
-    ///
-    fn text_output(&self, weather_api: &WeatherData, report_writer: &ReportWriter) -> CliResult<()> {
-        let stopwatch = StopWatch::start_new();
-        let result = text::output(self.get_location_dates(weather_api)?, report_writer);
-        log::info!("overall time {}", &stopwatch);
-        result
-    }
-    /// Generates a JSON report for list history.
-    ///
-    /// An error will be returned if there are issues getting location history dates from the domain.
-    ///
-    /// # Arguments
-    ///
-    /// * `weather_data` - The domain API used to access weather data.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
-    /// * `pretty` - if `true` JSON output will be formatted with space and newlines.
-    ///
-    fn json_output(&self, weather_api: &WeatherData, report_writer: &ReportWriter, pretty: bool) -> CliResult<()> {
-        json::output(self.get_location_dates(weather_api)?, report_writer, pretty)
-    }
-    /// Generates a CSV report for list history.
-    ///
-    /// An error will be returned if there are issues getting location history dates from the domain.
-    ///
-    /// # Arguments
-    ///
-    /// * `weather_data` - The domain API used to access weather data.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
-    ///
-    fn csv_output(&self, weather_api: &WeatherData, report_writer: &ReportWriter) -> CliResult<()> {
-        csv::output(self.get_location_dates(weather_api)?, report_writer)
-    }
-}
-
-/// The list history text based reporting implementation.
-///
-/// This module utilizes the `text_reports` module to generate reports.
-///
-mod text {
     use super::*;
     use toolslib::{
         rptcols, rptrow,
@@ -109,9 +45,8 @@ mod text {
     /// # Arguments
     ///
     /// * `location_history_dates` - The list of location and history dates that will be reported.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
-    ///
-    pub fn output(locations_history_dates: Vec<HistoryDates>, report_writer: &ReportWriter) -> CliResult<()> {
+    /// * `writer` - The output manager that controls where report output will be sent.
+    pub fn generate(locations_history_dates: Vec<HistoryDates>, writer: &mut impl Write) -> Result<()> {
         let mut report = Report::from(rptcols!(<, <));
         report.header(rptrow!(^ "Location", ^ "History Dates")).separator("-");
         for location_history_dates in locations_history_dates {
@@ -127,7 +62,7 @@ mod text {
                 }
             }
         }
-        write_strings(&mut report_writer.get_writer()?, report.into_iter())?;
+        write_strings(writer, report.into_iter())?;
         Ok(())
     }
 }
@@ -138,12 +73,12 @@ mod test {
     fn test() {}
 }
 
-/// The list history CSV based reporting implementation.
-///
-/// This module utilizes the `csv` dependency to generate reports.
-///
-mod csv {
-    use super::{CliResult, HistoryDates, ReportWriter};
+mod csv_report {
+    /// The list history CSV based reporting implementation.
+    ///
+    /// This module utilizes the `csv` dependency to generate reports.
+    ///
+    use super::*;
     use csv::Writer;
 
     /// Generates the list history CSV based report.
@@ -153,10 +88,10 @@ mod csv {
     /// # Arguments
     ///
     /// * `location_history_dates` - The list of location and history dates that will be reported.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
+    /// * `writer` - The output manager that controls where report output will be sent.
     ///
-    pub fn output(locations_history_dates: Vec<HistoryDates>, report_writer: &ReportWriter) -> CliResult<()> {
-        let mut writer = Writer::from_writer(report_writer.get_writer()?);
+    pub fn generate(locations_history_dates: Vec<HistoryDates>, writer: &mut impl Write) -> Result<()> {
+        let mut writer = Writer::from_writer(writer);
         writer.write_record(&["location", "start_date", "end_date"])?;
         for location_history_dates in locations_history_dates {
             for history_range in location_history_dates.history_dates {
@@ -168,11 +103,11 @@ mod csv {
     }
 }
 
-/// The list history JSON based reporting implementation.
-///
-/// This module utilizes the `serde_json` dependency to generate reports.
-///
-mod json {
+mod json_report {
+    /// The list history JSON based reporting implementation.
+    ///
+    /// This module utilizes the `serde_json` dependency to generate reports.
+    ///
     use super::*;
     use serde_json::{json, to_string, to_string_pretty, Value};
 
@@ -183,14 +118,10 @@ mod json {
     /// # Arguments
     ///
     /// * `location_history_dates` - The list of location and history dates that will be reported.
-    /// * `report_writer` - The output manager that controls where report output will be sent.
+    /// * `writer` - The output manager that controls where report output will be sent.
     /// * `pretty` - if `true` JSON output will be formatted with space and newlines.
     ///
-    pub fn output(
-        locations_history_dates: Vec<HistoryDates>,
-        report_writer: &ReportWriter,
-        pretty: bool,
-    ) -> CliResult<()> {
+    pub fn generate(locations_history_dates: Vec<HistoryDates>, writer: &mut impl Write, pretty: bool) -> Result<()> {
         let location_array: Vec<Value> = locations_history_dates
             .into_iter()
             .map(|location_history_dates| {
@@ -213,7 +144,7 @@ mod json {
             .collect();
         let root = json!({ "history": location_array });
         let as_text = if pretty { to_string_pretty } else { to_string };
-        writeln!(report_writer.get_writer()?, "{}", as_text(&root)?)?;
+        writeln!(writer, "{}", as_text(&root)?)?;
         Ok(())
     }
 }

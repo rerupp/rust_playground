@@ -1,11 +1,11 @@
 //! The database implementation of weather data.
 
 use crate::{
-    backend::{self, DataAdapter, Error, Result},
+    backend::{self, history, DataAdapter, Error, Result},
     entities,
 };
-// use rusqlite as sql;
 use rusqlite::Connection;
+use toolslib::stopwatch::StopWatch;
 
 // Since database functionality is scoped to this module it's okay to add the error handler
 // here and not in the module where Error is defined.
@@ -303,9 +303,44 @@ mod v1 {
 
         use super::*;
         use chrono::NaiveDate;
-        use entities::{DataCriteria, DateRange, HistoryDates, HistorySummaries};
+        use entities::{DataCriteria, DateRange, History, HistoryDates, HistorySummaries};
         use rusqlite::named_params;
+        use std::collections::HashSet;
 
+        /// For a given collection of histories, filter out the ones that already exist.
+        ///
+        /// # Arguments
+        ///
+        /// * `conn` is the database connection to use.
+        /// * `lid` is the location id.
+        /// * `histories` is what will be filtered.
+        pub fn histories_not_found<'h>(
+            conn: &Connection,
+            lid: i64,
+            histories: &'h Vec<History>,
+        ) -> Result<Vec<&'h History>> {
+            const SQL: &str = r#"SELECT date FROM metadata WHERE lid = :lid"#;
+            let stopwatch = StopWatch::start_new();
+            let mut stmt = conn.prepare(&SQL)?;
+            let mut rows = stmt.query(named_params! {":lid": lid})?;
+            let mut existing_dates = HashSet::new();
+            while let Some(row) = rows.next()? {
+                let date: NaiveDate = row.get("date")?;
+                existing_dates.insert(date);
+            }
+            let not_found = histories
+                .iter()
+                .filter_map(|h| match existing_dates.contains(&h.date) {
+                    true => {
+                        log::warn!("location id={} history already has {}.", lid, h.date);
+                        None
+                    }
+                    false => Some(h),
+                })
+                .collect();
+            log::debug!("histories_not_found {}", stopwatch);
+            Ok(not_found)
+        }
         /// Get the location history dates.
         ///
         /// # Arguments
@@ -397,7 +432,7 @@ mod v1 {
                     count: 0,
                     overall_size: None,
                     raw_size: None,
-                    compressed_size: None,
+                    store_size: None,
                 })
                 .collect();
             let aliases: Vec<&str> = history_summaries.iter().map(|h| h.location.alias.as_str()).collect();
@@ -406,7 +441,7 @@ mod v1 {
                     if history.location.alias == alias {
                         history.count = count;
                         history.raw_size = Some(raw_size);
-                        history.compressed_size = Some(compressed_size);
+                        history.store_size = Some(compressed_size);
                         break;
                     }
                 }
@@ -467,8 +502,9 @@ mod v1 {
         pub(super) fn table_size(conn: &Connection, table_name: &str) -> Result<Vec<(String, usize)>> {
             // get the count of history dates for each location
             let (total, history_counts) = query::history_counts(conn)?;
-            // get the overall size of history for the table
+            // get the overall size of history and metadata for the table
             let table_size = query::sqlite_history_size(conn, table_name)?;
+            eprintln!("'{}' size: {}", table_name, table_size);
             // calculate the sizes based on the number of histories
             let locations_size: Vec<(String, usize)> = history_counts
                 .into_iter()
@@ -540,6 +576,7 @@ mod v1 {
         //! Provide database support for weather data locations.
         use super::*;
         use entities::Location;
+        use rusqlite::named_params;
 
         /// Loads location into the database.
         ///
@@ -651,6 +688,17 @@ mod v1 {
                 id_aliases.push((id, alias))
             }
             Ok(id_aliases)
+        }
+
+        pub(super) fn location_id(conn: &Connection, alias: &str) -> Result<i64> {
+            let mut stmt = conn.prepare("SELECT id FROM locations AS l where l.alias = :alias")?;
+            match stmt.query_row(named_params! {":alias": alias}, |row| Ok(row.get(0))) {
+                Ok(id) => Ok(id.unwrap()),
+                Err(err) => {
+                    let reason = format!("Error getting id for '{}' ({}).", alias, err);
+                    Err(Error::from(reason))
+                }
+            }
         }
 
         pub use conditions::{between, equals, like, or, Between, Condition, Equals, Like, Or};
@@ -939,10 +987,9 @@ mod v1 {
 
     mod hybrid {
         //! The database hybrid implementation
-        #![allow(unused)]
         use super::*;
         use crate::{
-            backend::{filesys::WeatherHistory, DataAdapter, Error, Result},
+            backend::{filesys::WeatherHistory, DataAdapter, Result},
             prelude::{DailyHistories, DataCriteria, DateRange, HistoryDates, HistorySummaries, Location},
         };
         use rusqlite::named_params;
@@ -966,21 +1013,13 @@ mod v1 {
             ///
             /// # Arguments
             ///
-            /// * `criteria` identifies what location should be used.
+            /// * `location` is whose historical data will be found.
             /// * `history_range` specifies the date range that should be used.
-            fn daily_histories(&self, criteria: DataCriteria, history_range: DateRange) -> Result<DailyHistories> {
-                let mut locations = self.locations(criteria)?;
-                match locations.len() {
-                    0 => Err(Error::from("The data criteria did not result in finding a location.")),
-                    1 => {
-                        let location = locations.pop().unwrap();
-                        let file = self.0.archive(&location.alias);
-                        let archive = WeatherHistory::new(&location.alias, file)?;
-                        let daily_histories = archive.daily_histories(&history_range)?;
-                        Ok(DailyHistories { location, daily_histories })
-                    }
-                    _ => Err(Error::from("The data criteria found more than 1 location.")),
-                }
+            fn daily_histories(&self, location: Location, history_range: DateRange) -> Result<DailyHistories> {
+                let file = self.0.archive(&location.alias);
+                let archive = WeatherHistory::new(&location.alias, file)?;
+                let daily_histories = archive.daily_histories(&history_range)?;
+                Ok(DailyHistories { location, histories: daily_histories })
             }
             /// Get the weather history dates for locations.
             ///
@@ -1035,7 +1074,6 @@ mod v1 {
                     let file = weather_dir.archive(&alias);
                     let archive = WeatherArchive::open(&alias, file)?;
                     for md in archive.archive_iter(None, false, ArchiveMd::new)? {
-                        let params = (lid, &md.date, md.compressed_size, md.size, md.mtime);
                         stmt.execute(named_params! {
                             ":lid": lid,
                             ":date": &md.date,
@@ -1055,14 +1093,12 @@ mod v1 {
         //! The database document implementation
         use super::*;
         use crate::{
-            backend::{filesys::ArchiveData, string_to_json, DarkskyConverter, DataAdapter, Error, Result},
-            prelude::{
-                DailyHistories, DailyHistory, DataCriteria, DateRange, HistoryDates, HistorySummaries, Location,
-            },
+            backend::{filesys::ArchiveData, DataAdapter, Error, Result},
+            prelude::{DailyHistories, DataCriteria, DateRange, History, HistoryDates, HistorySummaries, Location},
         };
         use chrono::NaiveDate;
         use rusqlite::{blob::ZeroBlob, named_params, Transaction};
-        use serde_json::{json, Value};
+        use serde_json::Value;
 
         /// Create the *document* version of the data adapter.
         ///
@@ -1085,20 +1121,12 @@ mod v1 {
             ///
             /// # Arguments
             ///
-            /// * `criteria` identifies what location should be used.
+            /// * `location` identifies what location should be used.
             /// * `history_range` specifies the date range that should be used.
-            fn daily_histories(&self, criteria: DataCriteria, date_range: DateRange) -> Result<DailyHistories> {
-                let mut locations = self.locations(criteria)?;
-                match locations.len() {
-                    0 => Err(Error::from("The data criteria did not result in finding a location.")),
-                    1 => {
-                        let location = locations.pop().unwrap();
-                        let conn = db_conn!(&self.0)?;
-                        let daily_histories = query_daily_history(&conn, &location.alias, date_range)?;
-                        Ok(DailyHistories { location, daily_histories })
-                    }
-                    _ => Err(Error::from("The data criteria found more than 1 location.")),
-                }
+            fn daily_histories(&self, location: Location, date_range: DateRange) -> Result<DailyHistories> {
+                let conn = db_conn!(&self.0)?;
+                let daily_histories = query_daily_history(&conn, &location.alias, date_range)?;
+                Ok(DailyHistories { location, histories: daily_histories })
             }
             /// Get the weather history dates for locations.
             ///
@@ -1118,7 +1146,7 @@ mod v1 {
                 let conn = db_conn!(&self.0)?;
                 let mut history_summaries = query::history_summaries(&conn, criteria)?;
                 // this is terribly expensize but it fullfills the contract and is still cheaper than file archives
-                for (alias, overall_size) in query::table_size(&conn, "document")? {
+                for (alias, overall_size) in query::table_size(&conn, "documents")? {
                     for history_summary in &mut history_summaries {
                         if history_summary.location.alias == alias {
                             history_summary.overall_size = Some(overall_size);
@@ -1161,14 +1189,13 @@ mod v1 {
         /// * `conn` is the database connection that will be used.
         /// * `alias` is the location alias.
         /// * `date_range` identifies what daily history will be returned.
-        pub fn query_daily_history(conn: &Connection, alias: &str, date_range: DateRange) -> Result<Vec<DailyHistory>> {
+        pub fn query_daily_history(conn: &Connection, alias: &str, date_range: DateRange) -> Result<Vec<History>> {
             let db_config = admin::database_configuration(&conn)?;
             let mut stmt = conn.prepare(SELECT_SQL)?;
             let mut rows =
                 stmt.query(named_params! {":alias": alias, ":from": date_range.from, ":thru": date_range.to})?;
             let mut daily_histories = vec![];
             while let Some(row) = rows.next()? {
-                let date: NaiveDate = row.get("date")?;
                 let json_text: String = if db_config.compress {
                     let rid: i64 = row.get("document_id")?;
                     let data = blob::read(conn, "documents", "daily_zip", rid)?;
@@ -1177,15 +1204,7 @@ mod v1 {
                 } else {
                     row.get("daily")?
                 };
-                // restore the Darksky document structure
-                let json = json!({
-                    "daily": {
-                        "data": [
-                            string_to_json(&json_text)?
-                        ]
-                    }
-                });
-                let history = DailyHistory::from_json(alias, &date, &json)?;
+                let history = history::from_bytes(alias, json_text.as_bytes())?;
                 daily_histories.push(history);
             }
             Ok(daily_histories)
@@ -1580,12 +1599,11 @@ mod v1 {
     mod normalized {
         //! The [DataAdapter] implementation using a normalized datbase schema.
         use super::*;
-        use crate::{
-            backend::{filesys::ArchiveData, DataAdapter, Error, Result},
-            prelude::{
-                DailyHistories, DailyHistory, DataCriteria, DateRange, HistoryDates, HistorySummaries, Location,
-            },
+        use backend::{
+            filesys::{ArchiveData, WeatherHistoryUpdate},
+            DataAdapter, Error, Result,
         };
+        use entities::{DailyHistories, DataCriteria, DateRange, History, HistoryDates, HistorySummaries, Location};
         use rusqlite::{named_params, Transaction};
 
         /// Create the *normalized* version of the data adapter.
@@ -1608,20 +1626,12 @@ mod v1 {
             ///
             /// # Arguments
             ///
-            /// * `criteria` identifies what location should be used.
+            /// * `location` identifies what location should be used.
             /// * `history_range` specifies the date range that should be used.
-            fn daily_histories(&self, criteria: DataCriteria, date_range: DateRange) -> Result<DailyHistories> {
-                let mut locations = self.locations(criteria)?;
-                match locations.len() {
-                    0 => Err(Error::from("The data criteria did not result in finding a location.")),
-                    1 => {
-                        let location = locations.pop().unwrap();
-                        let conn = db_conn!(&self.0)?;
-                        let daily_histories = query_daily_history(&conn, &location.alias, date_range)?;
-                        Ok(DailyHistories { location, daily_histories })
-                    }
-                    _ => Err(Error::from("The data criteria found more than 1 location.")),
-                }
+            fn daily_histories(&self, location: Location, date_range: DateRange) -> Result<DailyHistories> {
+                let conn = db_conn!(&self.0)?;
+                let daily_histories = query_history(&conn, &location.alias, date_range)?;
+                Ok(DailyHistories { location, histories: daily_histories })
             }
             /// Get the weather history dates for locations.
             ///
@@ -1638,17 +1648,36 @@ mod v1 {
             ///
             /// * `criteria` identifies the locations that should be used.
             fn history_summaries(&self, criteria: DataCriteria) -> Result<Vec<HistorySummaries>> {
+                // get the archives history summary
+                let archive_summary =
+                    backend::filesys::archive_adapter(self.0.to_string().as_str())?.history_summaries(
+                        DataCriteria { filters: criteria.filters.clone(), icase: criteria.icase, sort: criteria.sort },
+                    )?;
                 let conn = db_conn!(&self.0)?;
-                let mut history_summaries = query::history_summaries(&conn, criteria)?;
-                // this is terribly expensize but it fullfills the contract and is still cheaper than file archives
-                for (alias, overall_size) in query::table_size(&conn, "daily")? {
-                    for history_summary in &mut history_summaries {
-                        if history_summary.location.alias == alias {
-                            history_summary.overall_size = Some(overall_size);
-                            break;
+                let db_summaries = query::table_size(&conn, "history")?;
+                let history_summaries = archive_summary
+                    .into_iter()
+                    .map(|hs| {
+                        let db_size =
+                            db_summaries
+                                .iter()
+                                .find_map(|(alias, size)| if alias == &hs.location.alias { Some(*size) } else { None });
+                        let overall_size = if hs.overall_size.is_none() && db_size.is_none() {
+                            None
+                        } else {
+                            let archive_size = hs.overall_size.map_or(0, |s| s);
+                            let db_size = db_size.map_or(0, |s| s);
+                            Some(archive_size + db_size)
+                        };
+                        HistorySummaries {
+                            location: hs.location,
+                            count: hs.count,
+                            overall_size,
+                            raw_size: db_size,
+                            store_size: hs.overall_size,
                         }
-                    }
-                }
+                    })
+                    .collect();
                 Ok(history_summaries)
             }
             /// Get the metadata for weather locations.
@@ -1660,20 +1689,105 @@ mod v1 {
                 let conn = db_conn!(&self.0)?;
                 locations::get(&conn, &criteria.filters, criteria.sort)
             }
+            /// Add weather data history for a location.
+            ///
+            /// # Arguments
+            ///
+            /// * `criteria` identifies what location should be used.
+            /// * `date_range` specifies the date range that should be used.
+            fn add_histories(&self, daily_histories: &DailyHistories) -> Result<usize> {
+                // add histories to the archive first
+                let location = &daily_histories.location;
+                let file = self.0.archive(&location.alias);
+                let mut history_updater = WeatherHistoryUpdate::new(&location.alias, file)?;
+                let archive_additions = history_updater.add(&daily_histories.histories)?;
+                // filter out histories that already exist in the db
+                let mut conn = db_conn!(&self.0)?;
+                let lid = locations::location_id(&conn, &location.alias)?;
+                let histories = query::histories_not_found(&conn, lid, &daily_histories.histories)?;
+                let histories_len = histories.len();
+                if archive_additions != histories_len {
+                    log::warn!(
+                        "There were {} histories added to archive, {} added to db.",
+                        archive_additions,
+                        histories_len
+                    );
+                }
+                // now add the histories.
+                let stopwatch = StopWatch::start_new();
+                let size = size_estimate(&conn, "history")?;
+                let mut tx = conn.transaction()?;
+                for history in histories {
+                    let size = size
+                        + history.description.as_ref().map_or(0, |s| s.len())
+                        + history.precipitation_type.as_ref().map_or(0, |s| s.len());
+                    insert_history(&mut tx, lid, size, history)?;
+                }
+                tx.commit()?;
+                log::debug!("add_histories: {}", stopwatch);
+                Ok(std::cmp::max(archive_additions, histories_len))
+            }
         }
 
         /// The `SQL` used to insert normalized data into the database.
         const INSERT_SQL: &str = r#"
-            INSERT INTO daily (
-                mid, temp_high, temp_high_t, temp_low, temp_low_t, temp_max, temp_max_t, temp_min, temp_min_t,
-                wind_speed, wind_gust, wind_gust_t, wind_bearing, cloud_cover, uv_index, uv_index_t,
-                summary, humidity, dew_point, sunrise_t, sunset_t, moon_phase
+            INSERT INTO history (
+                mid, temp_high, temp_low, temp_mean, dew_point,
+                humidity, sunrise_t, sunset_t, cloud_cover, moon_phase,
+                uv_index, wind_speed, wind_gust, wind_dir, visibility,
+                pressure, precip, precip_prob, precip_type, description
             )
             VALUES (
-                :mid, :temp_high, :temp_high_t, :temp_low, :temp_low_t, :temp_max, :temp_max_t, :temp_min, :temp_min_t,
-                :wind_speed, :wind_gust, :wind_gust_t, :wind_bearing, :cloud_cover, :uv_index, :uv_index_t, 
-                :summary, :humidity, :dew_point, :sunrise_t, :sunset_t, :moon_phase
+                :mid, :temp_high, :temp_low, :temp_mean, :dew_point,
+                :humidity, :sunrise_t, :sunset_t, :cloud_cover, :moon_phase,
+                :uv_index, :wind_speed, :wind_gust, :wind_dir, :visibility, 
+                :pressure, :precip, :precip_prob, :precip_type, :description
             )"#;
+        /// Add weather history to the database.
+        ///
+        /// This is a `static` method in order to separate collection from adding data. It can't be
+        /// an instance method because it would require borrowing mutable from an instance already
+        /// mutable.
+        ///
+        /// # Arguments
+        ///
+        /// * `tx` is the transaction associate with the data insertion.
+        /// * `msg` contains the history that will be added to the database.
+        fn insert_history(tx: &mut Transaction, lid: i64, size: usize, history: &History) -> Result<()> {
+            let mut data_stmt = tx.prepare_cached(INSERT_SQL)?;
+            let mut md_stmt = tx.prepare_cached(METADATA_SQL)?;
+            md_stmt.execute(named_params! {
+                ":lid": lid,
+                ":date": &history.date,
+                ":store_size": size,
+                ":size": size,
+                ":mtime": 0
+            })?;
+            let mid = tx.last_insert_rowid();
+            data_stmt.execute(named_params! {
+                ":mid": mid,
+                ":temp_high": history.temperature_high,
+                ":temp_low": history.temperature_low,
+                ":temp_mean": history.temperature_mean,
+                ":dew_point": history.dew_point,
+                ":humidity": history.humidity,
+                ":sunrise_t": history.sunrise,
+                ":sunset_t": history.sunset,
+                ":cloud_cover": history.cloud_cover,
+                ":moon_phase": history.moon_phase,
+                ":uv_index": history.uv_index,
+                ":wind_speed": history.wind_speed,
+                ":wind_gust": history.wind_gust,
+                ":wind_dir": history.wind_direction,
+                ":visibility": history.visibility,
+                ":pressure": history.pressure,
+                ":precip": history.precipitation_amount,
+                ":precip_prob": history.precipitation_chance,
+                ":precip_type": history.precipitation_type,
+                ":description": history.description,
+            })?;
+            Ok(())
+        }
 
         /// Loads the database based on the *normalized* implementation of weather data.
         ///
@@ -1683,64 +1797,66 @@ mod v1 {
         /// * `weather_dir` is the weather data directory.
         /// * `threads` is the number of threads to use loading data.
         pub(super) fn load(weather_dir: &WeatherDir, threads: usize) -> Result<()> {
-            darksky::load(weather_dir, threads)
+            loader::run(weather_dir, threads)
         }
 
-        /// The `SQL` used to select data from the database.
-        const SELECT_SQL: &str = r#"
+        /// The `SQL` used to select history data from the database.
+        const HISTORY_SQL: &str = r#"
         SELECT
-            l.id AS lid, m.date AS date, d.temp_high AS temp_high, d.temp_high_t AS temp_high_t, d.temp_low AS temp_low, d.temp_low_t AS temp_low_t,
-            d.temp_max AS temp_max, d.temp_max_t AS temp_max_t, d.temp_min AS temp_min, d.temp_min_t AS temp_min_t,
-            d.wind_speed AS wind_speed, d.wind_gust AS wind_gust, d.wind_gust_t AS wind_gust_t, d.wind_bearing AS wind_bearing,
-            d.cloud_cover AS cloud_cover, d.uv_index AS uv_index, d.uv_index_t AS uv_index_t, d.summary AS summary, d.humidity AS humidity,
-            d.dew_point AS dew_point, d.sunrise_t AS sunrise_t, d.sunset_t AS sunset_t, d.moon_phase AS moon_phase
-        FROM locations l
+            l.id AS lid, m.date AS date,
+            h.temp_high AS temp_high, h.temp_low AS temp_low, h.temp_mean AS temp_mean,
+            h.dew_point AS dew_point, h.humidity AS humidity,
+            h.sunrise_t AS sunrise_t, h.sunset_t AS sunset_t, 
+            h.cloud_cover AS cloud_cover, h.moon_phase AS moon_phase, h.uv_index AS uv_index,
+            h.wind_speed AS wind_speed, h.wind_gust AS wind_gust, h.wind_dir AS wind_dir,
+            h.visibility as visibility, h.pressure as pressure,
+            h.precip as precip, h.precip_prob as precip_prob, h.precip_type as precip_type,
+            h.description AS description
+        FROM locations AS l
             INNER JOIN metadata AS m ON l.id=m.lid
-            INNER JOIN daily AS d ON m.id=d.mid
+            INNER JOIN history AS h ON m.id=h.mid
         WHERE
             l.alias=:alias AND m.date BETWEEN :from AND :thru
         ORDER BY date
         "#;
 
-        /// Get daily history from the database.
+        /// Get history from the database.
         ///
         /// # Arguments
         ///
         /// * `conn` is the database connection that will be used.
         /// * `alias` is the location alias name.
         /// * `date_range` determines the daily history.
-        fn query_daily_history(conn: &Connection, alias: &str, date_range: DateRange) -> Result<Vec<DailyHistory>> {
-            // let mut stmt = conn.prepare(include_str!("db/daily.sql"))?;
-            let mut stmt = conn.prepare(SELECT_SQL)?;
+        fn query_history(conn: &Connection, alias: &str, date_range: DateRange) -> Result<Vec<History>> {
+            let mut stmt = conn.prepare(HISTORY_SQL)?;
             let mut rows =
                 stmt.query(named_params! {":alias": alias, ":from": date_range.from, ":thru": date_range.to})?;
             let mut daily_histories = vec![];
             while let Some(row) = rows.next()? {
-                daily_histories.push(DailyHistory {
-                    location_id: alias.to_string(),
+                let history = History {
+                    alias: alias.to_string(),
                     date: row.get("date")?,
                     temperature_high: row.get("temp_high")?,
-                    temperature_high_time: row.get("temp_high_t")?,
                     temperature_low: row.get("temp_low")?,
-                    temperature_low_time: row.get("temp_low_t")?,
-                    temperature_max: row.get("temp_max")?,
-                    temperature_max_time: row.get("temp_max_t")?,
-                    temperature_min: row.get("temp_min")?,
-                    temperature_min_time: row.get("temp_min_t")?,
+                    temperature_mean: row.get("temp_mean")?,
+                    dew_point: row.get("dew_point")?,
+                    humidity: row.get("humidity")?,
+                    precipitation_chance: row.get("precip_prob")?,
+                    precipitation_type: row.get("precip_type")?,
+                    precipitation_amount: row.get("precip")?,
                     wind_speed: row.get("wind_speed")?,
                     wind_gust: row.get("wind_gust")?,
-                    wind_gust_time: row.get("wind_gust_t")?,
-                    wind_bearing: row.get("wind_bearing")?,
+                    wind_direction: row.get("wind_dir")?,
                     cloud_cover: row.get("cloud_cover")?,
+                    pressure: row.get("pressure")?,
                     uv_index: row.get("uv_index")?,
-                    uv_index_time: row.get("uv_index_t")?,
-                    summary: row.get("summary")?,
-                    humidity: row.get("humidity")?,
-                    dew_point: row.get("dew_point")?,
-                    sunrise_time: row.get("sunrise_t")?,
-                    sunset_time: row.get("sunset_t")?,
+                    sunrise: row.get("sunrise_t")?,
+                    sunset: row.get("sunset_t")?,
                     moon_phase: row.get("moon_phase")?,
-                })
+                    visibility: row.get("visibility")?,
+                    description: row.get("description")?,
+                };
+                daily_histories.push(history);
             }
             Ok(daily_histories)
         }
@@ -1777,11 +1893,10 @@ mod v1 {
             Ok(size_estimate)
         }
 
-        mod darksky {
-            //! The normalized database archive loader for DarkSky weather data.
+        mod loader {
+            //! The normalized database archive loader for [History].
             use super::*;
             use archive_loader::*;
-            use backend::DarkskyConverter;
             use std::{
                 sync::mpsc::{Receiver, Sender, TryRecvError},
                 thread, time,
@@ -1794,49 +1909,55 @@ mod v1 {
                 pub lid: i64,
                 /// The size of the daily history
                 pub size: usize,
-                /// The store size of the daily history.
-                pub store_size: usize,
+                // /// The store size of the daily history.
+                // pub store_size: usize,
                 /// The daily history.
-                pub history: DailyHistory,
+                pub history: History,
             }
 
-            /// Take the DarkSky archives and push them into the database.
+            /// Take the [History] archives and push them into the database.
             ///
             /// # Argument
             ///
             /// * `weather_dir` is the weather data directory.
             /// * `threads` is the number of workers to use getting data from archives.
-            pub(crate) fn load(weather_dir: &WeatherDir, threads: usize) -> Result<()> {
+            pub(crate) fn run(weather_dir: &WeatherDir, threads: usize) -> Result<()> {
                 let conn = db_conn!(weather_dir)?;
-                let size_estimate = size_estimate(&conn, "daily")? + 32;
+                // get an estimate of the raw size of data, 32 is overhead for the text
+                let size_estimate = size_estimate(&conn, "history")?;
                 let archives = ArchiveQueue::new(&conn, weather_dir)?;
                 let mut loader: ArchiveLoader<LoadMsg> = ArchiveLoader::new(threads);
-                loader.execute(archives, || Box::new(DarkSkyProducer(size_estimate)), || Box::new(HistoryConsummer(conn)))
+                loader.execute(
+                    archives,
+                    || Box::new(HistoryProducer(size_estimate)),
+                    || Box::new(HistoryConsummer(conn)),
+                )
             }
 
-            /// The DarkSky data producer.
-            struct DarkSkyProducer(
+            /// The [History] data producer.
+            struct HistoryProducer(
                 /// The estimated size of data within the database.
                 usize,
             );
-            impl DarkSkyProducer {
+            impl HistoryProducer {
                 /// Send the history data to the consummer side of the loader.
-                /// 
+                ///
                 /// # Arguments
-                /// 
+                ///
                 /// * `lid` is the locations primary id in the database.
                 /// * `history` is the data that will be sent off to the consummer.
                 /// * `sender` is used to pass data to the collector.
-                fn send_history(&self, lid: i64, history: DailyHistory, sender: &Sender<LoadMsg>) -> Result<()> {
-                    let size = self.0 + history.summary.as_ref().map_or(0, |s| s.len());
-                    let msg = LoadMsg { lid, size, store_size: size, history };
+                fn send_history(&self, lid: i64, history: History, sender: &Sender<LoadMsg>) -> Result<()> {
+                    let mut size = self.0 + history.description.as_ref().map_or(0, |s| s.len());
+                    size += history.precipitation_type.as_ref().map_or(Default::default(), |t| t.len());
+                    let msg = LoadMsg { lid, size, history };
                     match sender.send(msg) {
                         Ok(_) => Ok(()),
                         Err(_) => Err(Error::from("SendError...")),
                     }
                 }
             }
-            impl ArchiveProducer<LoadMsg> for DarkSkyProducer {
+            impl ArchiveProducer<LoadMsg> for HistoryProducer {
                 /// This is called by the archive producer to get data from the archive.
                 ///
                 /// # Arguments
@@ -1849,8 +1970,8 @@ mod v1 {
                     let archive = WeatherArchive::open(&alias, file)?;
                     let mut result = Ok(0);
                     for data in archive.archive_iter(None, false, ArchiveData::new)? {
-                        let json = data.json()?;
-                        match DailyHistory::from_json(&alias, &data.date, &json) {
+                        // let json = data.json()?;
+                        match backend::history::from_bytes(&alias, data.bytes()) {
                             Ok(history) => {
                                 self.send_history(lid, history, sender)?;
                                 match result.as_mut() {
@@ -1874,53 +1995,51 @@ mod v1 {
                 Connection,
             );
             impl HistoryConsummer {
-                /// Add weather history to the database.
-                ///
-                /// This is a `static` method in order to separate collection from adding data. It can't be
-                /// an instance method because it would require borrowing mutable from an instance already
-                /// mutable.
-                ///
-                /// # Arguments
-                ///
-                /// * `tx` is the transaction associate with the data insertion.
-                /// * `msg` contains the history that will be added to the database.
-                fn insert_history(tx: &mut Transaction, msg: LoadMsg) -> Result<()> {
-                    let mut data_stmt = tx.prepare_cached(INSERT_SQL)?;
-                    let mut md_stmt = tx.prepare_cached(METADATA_SQL)?;
-                    md_stmt.execute(named_params! {
-                        ":lid": msg.lid,
-                        ":date": &msg.history.date,
-                        ":store_size": msg.store_size,
-                        ":size": msg.size,
-                        ":mtime": 0
-                    })?;
-                    let mid = tx.last_insert_rowid();
-                    data_stmt.execute(named_params! {
-                        ":mid": mid,
-                        ":temp_high": msg.history.temperature_high,
-                        ":temp_high_t": msg.history.temperature_high_time,
-                        ":temp_low": msg.history.temperature_low,
-                        ":temp_low_t": msg.history.temperature_low_time,
-                        ":temp_max": msg.history.temperature_max,
-                        ":temp_max_t": msg.history.temperature_max_time,
-                        ":temp_min": msg.history.temperature_min,
-                        ":temp_min_t": msg.history.temperature_min_time,
-                        ":wind_speed": msg.history.wind_speed,
-                        ":wind_gust": msg.history.wind_gust,
-                        ":wind_gust_t": msg.history.wind_gust_time,
-                        ":wind_bearing": msg.history.wind_bearing,
-                        ":cloud_cover": msg.history.cloud_cover,
-                        ":uv_index": msg.history.uv_index,
-                        ":uv_index_t": msg.history.uv_index_time,
-                        ":summary": msg.history.summary,
-                        ":humidity": msg.history.humidity,
-                        ":dew_point": msg.history.dew_point,
-                        ":sunrise_t": msg.history.sunrise_time,
-                        ":sunset_t": msg.history.sunset_time,
-                        ":moon_phase": msg.history.moon_phase,
-                    })?;
-                    Ok(())
-                }
+                // /// Add weather history to the database.
+                // ///
+                // /// This is a `static` method in order to separate collection from adding data. It can't be
+                // /// an instance method because it would require borrowing mutable from an instance already
+                // /// mutable.
+                // ///
+                // /// # Arguments
+                // ///
+                // /// * `tx` is the transaction associate with the data insertion.
+                // /// * `msg` contains the history that will be added to the database.
+                // fn insert_history(tx: &mut Transaction, msg: LoadMsg) -> Result<()> {
+                //     let mut data_stmt = tx.prepare_cached(INSERT_SQL)?;
+                //     let mut md_stmt = tx.prepare_cached(METADATA_SQL)?;
+                //     md_stmt.execute(named_params! {
+                //         ":lid": msg.lid,
+                //         ":date": &msg.history.date,
+                //         ":store_size": msg.store_size,
+                //         ":size": msg.size,
+                //         ":mtime": 0
+                //     })?;
+                //     let mid = tx.last_insert_rowid();
+                //     data_stmt.execute(named_params! {
+                //         ":mid": mid,
+                //         ":temp_high": msg.history.temperature_high,
+                //         ":temp_low": msg.history.temperature_low,
+                //         ":temp_mean": msg.history.temperature_mean,
+                //         ":dew_point": msg.history.dew_point,
+                //         ":humidity": msg.history.humidity,
+                //         ":sunrise_t": msg.history.sunrise,
+                //         ":sunset_t": msg.history.sunset,
+                //         ":cloud_cover": msg.history.cloud_cover,
+                //         ":moon_phase": msg.history.moon_phase,
+                //         ":uv_index": msg.history.uv_index,
+                //         ":wind_speed": msg.history.wind_speed,
+                //         ":wind_gust": msg.history.wind_gust,
+                //         ":wind_dir": msg.history.wind_direction,
+                //         ":visibility": msg.history.visibility,
+                //         ":pressure": msg.history.pressure,
+                //         ":precip": msg.history.precipitation_amount,
+                //         ":precip_prob": msg.history.precipitation_chance,
+                //         ":precip_type": msg.history.precipitation_type,
+                //         ":description": msg.history.description,
+                //     })?;
+                //     Ok(())
+                // }
             }
             impl ArchiveConsummer<LoadMsg> for HistoryConsummer {
                 /// /// Called by the [ArchiveLoader] to collect the weather history being mined.
@@ -1936,7 +2055,7 @@ mod v1 {
                     loop {
                         match receiver.try_recv() {
                             Ok(msg) => {
-                                Self::insert_history(&mut tx, msg)?;
+                                super::insert_history(&mut tx, msg.lid, msg.size, &msg.history)?;
                                 count += 1;
                             }
                             Err(err) => match err {
@@ -1958,7 +2077,6 @@ mod v1 {
         }
     }
 
-    
     pub(super) mod archive_loader {
         //! A threaded history data loader.
         // use crate::backend::db::v1::document::load;
@@ -2013,9 +2131,9 @@ mod v1 {
                 }
             }
             /// Trait boiler plate that logs elapsed time for the producer.
-            /// 
+            ///
             /// # Arguments
-            /// 
+            ///
             /// * `description` tersely describes the elapsed time.
             /// * `count` is the number of items mined from the archive.
             /// * `load_time` is how long the gather took.
@@ -2051,9 +2169,9 @@ mod v1 {
                 }
             }
             /// Trait boiler plate that logs elapsed time for the consummer.
-            /// 
+            ///
             /// # Arguments
-            /// 
+            ///
             /// * `description` tersely describes the elapsed time.
             /// * `count` is the number of items mined from the archive.
             /// * `load_time` is how long the collection took.
@@ -2155,5 +2273,4 @@ mod v1 {
             }
         }
     }
-
 }

@@ -1,19 +1,24 @@
 //! The filesystem objects that support implementing weather data using `ZIP` archives.
 
-pub(crate) use v1::{
-    archive_adapter, weather_dir, weather_locations, ArchiveData, ArchiveMd, WeatherArchive,
-    WeatherDir, WeatherFile, WeatherHistory,
+pub(crate) use v1::{archive_adapter, weather_dir, WeatherDir};
+pub(in crate::backend) use v1::{
+    weather_locations, ArchiveData, ArchiveMd, WeatherArchive, WeatherFile, WeatherHistory, WeatherHistoryUpdate,
 };
 
 mod v1 {
     //! The first generation of the new file based weather data implmentation
-    //!
     #[cfg(test)]
     use crate::backend::testlib;
-    use crate::backend::{bytes_to_json, DarkskyConverter, Error, Result};
-    use crate::prelude::{DailyHistory, DateRange, DateRanges, HistorySummary, Location};
-    use std::{fmt::Display, fs::File, path::PathBuf};
 
+    use crate::backend::{history, Error, Result};
+    use crate::prelude::{DateRange, DateRanges, History, HistorySummary, Location};
+    use std::{
+        fmt::Display,
+        fs::File,
+        path::{Path, PathBuf},
+    };
+
+    /// Get a [WeatherDir] instance.
     pub(crate) fn weather_dir(dirname: &str) -> Result<WeatherDir> {
         let weather_dir = if dirname.len() > 0 {
             WeatherDir::try_from(dirname)?
@@ -31,8 +36,10 @@ mod v1 {
         //! Support for filesystem access.
         //!
         use super::*;
-        use std::fs::{Metadata, OpenOptions};
-        use toolslib::stopwatch::StopWatch;
+        use std::{
+            fs::{Metadata, OpenOptions},
+            io::ErrorKind,
+        };
 
         /// The [WeatherDir] error builder.
         macro_rules! dir_err {
@@ -55,14 +62,14 @@ mod v1 {
         }
         impl TryFrom<String> for WeatherDir {
             type Error = Error;
-            #[inline]
+            /// Create a [WeatherDir] instance using the string as a directory pathname.
             fn try_from(dirname: String) -> std::result::Result<Self, Self::Error> {
                 WeatherDir::new(PathBuf::from(dirname))
             }
         }
         impl TryFrom<&str> for WeatherDir {
             type Error = Error;
-            #[inline]
+            /// Create a [WeatherDir] instance using the string as a directory pathname.
             fn try_from(dirname: &str) -> std::result::Result<Self, Self::Error> {
                 WeatherDir::new(PathBuf::from(dirname))
             }
@@ -93,12 +100,16 @@ mod v1 {
                 let archive_name = self.0.join(alias).with_extension("zip");
                 WeatherFile::new(archive_name)
             }
+            /// Get the weather directory path.
+            pub fn path(&self) -> &Path {
+                self.0.as_path()
+            }
         }
 
         /// The [WeatherFile] error builder.
         macro_rules! file_err {
             ($id:expr, $reason:expr) => {
-                Error::from(format!("WeatherFile ({}): {}", $id, $reason))
+                Error::from(format!("WeatherFile {}: {}", $id, $reason))
             };
         }
 
@@ -115,7 +126,7 @@ mod v1 {
         impl Display for WeatherFile {
             /// Use the trait to get the pathname of the file.
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "{}", self.path.as_path().display())
+                write!(f, "{}", self.path.display())
             }
         }
         impl WeatherFile {
@@ -125,61 +136,58 @@ mod v1 {
             ///
             /// * `path` is the weather data file returned by the [`WeatherDir`].
             fn new(path: PathBuf) -> Self {
-                // this has to work in this use case because the path comes from a DirEntry
-                let stopwatch = StopWatch::start_new();
+                // this should always work since the path comes from a DirEntry
                 let filename = path.file_name().unwrap().to_str().unwrap().to_string();
                 let fs_metadata = match path.metadata() {
                     Ok(metadata) => Some(metadata),
                     Err(err) => {
-                        let filename = path.file_name().unwrap().to_str().unwrap();
-                        log::error!("{}", &file_err!(filename, &err));
+                        if err.kind() != ErrorKind::NotFound {
+                            log::error!("{}", &file_err!(filename, &err));
+                        }
                         None
                     }
                 };
-                log::trace!("WeatherFile: {} stat {}", filename, &stopwatch);
                 WeatherFile { filename, path, fs_metadata }
             }
             /// Refresh the filesystem metadata.
-            pub fn refresh(&mut self) {
+            pub(in crate::backend) fn refresh(&mut self) {
                 match self.path.metadata() {
                     Ok(metadata) => self.fs_metadata.replace(metadata),
                     Err(err) => {
-                        log::error!("{}", &file_err!(&self.path.display(), &err));
+                        if err.kind() != ErrorKind::NotFound {
+                            log::error!("{}", file_err!(&self.filename, &err));
+                        }
                         self.fs_metadata.take()
                     }
                 };
             }
             /// Indicates if the file exists or does not.
-            pub fn exists(&self) -> bool {
+            pub(in crate::backend) fn exists(&self) -> bool {
                 self.fs_metadata.is_some()
             }
             /// Get the size of the file.
-            pub fn size(&self) -> u64 {
+            pub(in crate::backend) fn size(&self) -> u64 {
                 match &self.fs_metadata {
                     Some(md) => md.len(),
                     None => 0,
                 }
             }
             /// Get the writer that can be used to update a Zip archive.
-            pub fn writer(&self) -> Result<File> {
+            pub(in crate::backend) fn writer(&self) -> Result<File> {
                 match File::options().read(true).write(true).open(&self.path) {
                     Ok(file) => Ok(file),
-                    Err(err) => Err(file_err!(&self.filename, &format!("append error ({}).", &err))),
+                    Err(err) => Err(file_err!(&self.filename, &format!("open read/write error ({}).", &err))),
                 }
             }
             /// Get the reader that can be used to read the contents of an Zip archive.
-            pub fn reader(&self) -> Result<File> {
-                let stopwatch = StopWatch::start_new();
-                let result = match OpenOptions::new().read(true).open(&self.path) {
+            pub(in crate::backend) fn reader(&self) -> Result<File> {
+                match OpenOptions::new().read(true).open(&self.path) {
                     Ok(file) => Ok(file),
                     Err(err) => Err(file_err!(&self.filename, &format!("open read error ({})...", &err))),
-                };
-                log::trace!(
-                    "WeatherFile: {} reader {}us",
-                    self.filename,
-                    toolslib::fmt::commafy(stopwatch.elapsed().as_micros())
-                );
-                result
+                }
+            }
+            pub(in crate::backend) fn path(&self) -> &Path {
+                self.path.as_path()
             }
         }
 
@@ -235,23 +243,24 @@ mod v1 {
         }
     }
 
-    // pub(crate) use archive::{to_daily_history, to_json, ArchiveData, ArchiveMd, WeatherArchive, WeatherHistory};
-    pub(crate) use archive::{ArchiveData, ArchiveMd, WeatherArchive, WeatherHistory};
+    pub(in crate::backend) use archive::{
+        ArchiveData, ArchiveMd, WeatherArchive, WeatherHistory, WeatherHistoryUpdate,
+    };
     mod archive {
         //! Support for weather data saved in `ZIP` archives.
         //!
         //! The implementation does not manage multi-client file access. That concern is left
         //! to the consummer of the module.
         use super::*;
-        use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+        use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
         use serde_json as json;
         use std::{
-            fs::OpenOptions,
+            collections::HashSet,
+            fs::{self, OpenOptions},
             io::{BufReader, Read, Write},
-            time::SystemTime,
         };
         use toolslib::{date_time::isodate, fmt::commafy, stopwatch::StopWatch};
-        use zip::{read::ZipFile, write::FileOptions, DateTime, ZipArchive, ZipWriter};
+        use zip::{self, read::ZipFile, write::FileOptions, DateTime, ZipArchive, ZipWriter};
 
         /// The [WeatherArchive] error builder.
         macro_rules! archive_err {
@@ -265,7 +274,7 @@ mod v1 {
 
         /// The public view of a weather archive file.
         #[derive(Debug)]
-        pub(crate) struct WeatherHistory(
+        pub(in crate::backend) struct WeatherHistory(
             /// The managed weather archive.
             WeatherArchive,
         );
@@ -276,17 +285,12 @@ mod v1 {
             ///
             /// * `alias` is the location id.
             /// * `file` is the weather archive file.
-            pub fn new(alias: &str, file: WeatherFile) -> Result<Self> {
+            pub(in crate::backend) fn new(alias: &str, file: WeatherFile) -> Result<Self> {
                 let archive = WeatherArchive::open(alias, file)?;
                 Ok(Self(archive))
             }
-            /// Right now only internal test builders use this.
-            #[allow(unused)]
-            pub fn alias(&self) -> &str {
-                &self.0.alias
-            }
             /// Creates a summary of the weather history statistics.
-            pub fn summary(&self) -> Result<HistorySummary> {
+            pub(in crate::backend) fn summary(&self) -> Result<HistorySummary> {
                 let mut files: usize = 0;
                 let mut size: u64 = 0;
                 let mut compressed_size: u64 = 0;
@@ -305,7 +309,7 @@ mod v1 {
                 })
             }
             /// Get the weather history dates that are available.
-            pub fn dates(&self) -> Result<DateRanges> {
+            pub(in crate::backend) fn dates(&self) -> Result<DateRanges> {
                 let mut stopwatch = StopWatch::start_new();
                 let iter = self.0.archive_iter(None, false, ArchiveMd::new)?;
                 let dates: Vec<NaiveDate> = iter.map(|md| md.date).collect();
@@ -324,40 +328,73 @@ mod v1 {
             ///
             /// * `filter` restricts the range of the historical weather data.
             ///
-            pub fn daily_histories(&self, filter: &DateRange) -> Result<Vec<DailyHistory>> {
-                let iter = self.0.archive_iter(Some(filter), true, daily_history_builder)?;
+            pub(in crate::backend) fn daily_histories(&self, filter: &DateRange) -> Result<Vec<History>> {
+                // let iter = self.0.archive_iter(Some(filter), true, daily_history_builder)?;
+                fn history_builder(alias: &str, date: &NaiveDate, zipfile: ZipFile) -> Result<History> {
+                    let data = ArchiveData::new(alias, date, zipfile)?;
+                    history::from_bytes(alias, data.bytes())
+                }
+                let iter = self.0.archive_iter(Some(filter), true, history_builder)?;
                 let histories = iter.collect();
                 Ok(histories)
             }
-            /// Add weather history to the archive.
+        }
+
+        /// The weather archive file updater.
+        #[derive(Debug)]
+        pub(in crate::backend) struct WeatherHistoryUpdate(
+            /// The weather archive that will be updated.
+            WeatherArchive,
+        );
+        impl WeatherHistoryUpdate {
+            /// Create a new instance of the weather history updater.
             ///
             /// # Arguments
             ///
-            /// * `date` is the weather history date.
-            /// * `data` is the parsed `JSON` document containing weather history.
-            /// * `mtime` is the inernal archive file timestamp. If not provided the current time will be used.
-            #[allow(unused)]
-            pub fn add_data(&mut self, date: &NaiveDate, data: &json::Value, mtime: Option<i64>) -> Result<()> {
-                let millis = match mtime {
-                    Some(mtime) => mtime,
-                    None => SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis() as i64,
-                };
-                self.0.add_data(date, data, millis)
+            /// * `alias` is the location id.
+            /// * `file` is the weather archive file.
+            pub(in crate::backend) fn new(alias: &str, file: WeatherFile) -> Result<Self> {
+                let archive = WeatherArchive::open(alias, file)?;
+                Ok(Self(archive))
             }
-        }
-
-        fn daily_history_builder(alias: &str, date: &NaiveDate, zipfile: ZipFile) -> Result<DailyHistory> {
-            let data = ArchiveData::new(alias, date, zipfile)?;
-            let json = data.json()?;
-            // to_daily_history(alias, date.clone(), &json["daily"]["data"][0])
-            DailyHistory::from_json(alias, date, &json)
+            /// Add histories to the weather archive that don't already exist.
+            ///
+            /// # Arguments
+            ///
+            /// * `histories` are the histories that will be added.
+            pub(in crate::backend) fn add(&mut self, histories: &Vec<History>) -> Result<usize> {
+                // don't add histories that already exist
+                let mut stopwatch = StopWatch::start_new();
+                let dates_iter = self.0.archive_iter(None, false, ArchiveMd::new)?;
+                let existing_dates: HashSet<NaiveDate> = dates_iter.map(|md| md.date).collect();
+                let additions: Vec<&History> = histories
+                    .iter()
+                    .filter_map(|h| match existing_dates.contains(&h.date) {
+                        true => {
+                            log::warn!("Location {} already has history for {}.", self.0.alias, h.date);
+                            None
+                        }
+                        false => Some(h),
+                    })
+                    .collect();
+                log::debug!("collect additions {}", &stopwatch);
+                // now add the histories that weren't found to the archive
+                stopwatch.start();
+                let additions_len = additions.len();
+                if additions_len > 0 {
+                    let mut writer = self.0.archive_writer();
+                    writer.write(additions)?;
+                }
+                log::debug!("archive update added {} in {}", additions_len, &stopwatch);
+                Ok(additions_len)
+            }
         }
 
         /// The manager for a `Zip` archive with weather data.
         #[derive(Debug)]
-        pub(crate) struct WeatherArchive {
+        pub(in crate::backend) struct WeatherArchive {
             /// The unique identifier for a location.
-            alias: String,
+            pub(in crate::backend) alias: String,
             /// The file that contains weather data.
             file: WeatherFile,
         }
@@ -370,8 +407,9 @@ mod v1 {
             ///
             /// * `alias` is the location identifier.
             /// * `file` is the archive containing of weather data.
-            pub fn open(alias: &str, file: WeatherFile) -> Result<Self> {
+            pub(in crate::backend) fn open(alias: &str, mut file: WeatherFile) -> Result<Self> {
                 let stopwatch = StopWatch::start_new();
+                file.refresh();
                 let result = if !file.exists() {
                     Err(archive_err!(alias, format!("'{}' does not exist...", &file)))
                 } else {
@@ -394,8 +432,8 @@ mod v1 {
             ///
             /// * `alias` is the location identifier.
             /// * `file` is the container of weather data.
-            #[allow(unused)]
-            fn create(alias: &str, mut file: WeatherFile) -> Result<Self> {
+            pub(in crate::backend) fn create(alias: &str, mut file: WeatherFile) -> Result<Self> {
+                file.refresh();
                 if file.exists() {
                     Err(archive_err!(&alias, format!("'{}' already exists...", &file)))
                 } else {
@@ -406,10 +444,7 @@ mod v1 {
                         let writer = file.writer()?;
                         let mut archive = ZipWriter::new(writer);
                         match archive.finish() {
-                            Ok(_) => {
-                                file.refresh();
-                                Self::open(alias, file)
-                            }
+                            Ok(_) => Self::open(alias, file),
                             Err(err) => Err(archive_err!(alias, &err)),
                         }
                     }
@@ -424,67 +459,26 @@ mod v1 {
             /// * `filter` restricts history data to a range of dates.
             /// * `sort` when true will order history by ascending date.
             /// * `builder` is called by the iterator to create the history data.
-            pub fn archive_iter<T>(
+            pub(in crate::backend) fn archive_iter<T>(
                 &self,
                 filter: Option<&DateRange>,
                 sort: bool,
                 builder: HistoryBuilder<T>,
             ) -> Result<ArchiveIter<T>> {
-                let mut reader = self.get_reader()?;
-                let mut history_dates = Self::filter_history(&mut reader, filter);
-                if sort {
-                    history_dates.sort()
-                }
-                Ok(ArchiveIter::new(&self.alias, reader, history_dates, builder))
-            }
-            /// Add weather data history to the archive.
-            ///
-            /// # Arguments
-            ///
-            /// * `date` is the weather history date.
-            /// * `json` is the historical weather data.
-            /// * `mtime` is the internal archive file timestamp.
-            fn add_data(&mut self, date: &NaiveDate, data: &json::Value, mtime: i64) -> Result<()> {
-                let mut writer = ArchiveWriter::new(&self.alias, self.get_writer()?);
-                writer.add_json(date, data, mtime)
-            }
-            /// This is used internally right now to build test case data.
-            #[allow(unused)]
-            fn add_bulk<I>(&mut self, data_collection: I) -> Result<u64>
-            where
-                I: Iterator<Item = (NaiveDate, Vec<u8>, i64)>,
-            {
-                let mut writer = ArchiveWriter::new(&self.alias, self.get_writer()?);
-                let mut written = 0;
-                for (date, data, mtime) in data_collection {
-                    writer.add_data(&date, &data, mtime)?;
-                    written += 1;
-                }
-                Ok(written)
-            }
-            /// Create the manager that writes content to the archive.
-            fn get_writer(&self) -> Result<ZipWriter<File>> {
-                match self.file.writer() {
-                    Ok(file_writer) => match ZipWriter::new_append(file_writer) {
-                        Ok(zip_writer) => Ok(zip_writer),
-                        Err(err) => {
-                            let reason = format!("'{}' zip writer error ({}).", self.file.filename, &err);
-                            Err(archive_err!(&self.alias, reason))
-                        }
-                    },
-                    Err(err) => {
-                        let reason = format!("'{}' file writer error ({}).", self.file.filename, &err);
-                        Err(archive_err!(&self.alias, reason))
-                    }
-                }
-            }
-            /// Create the manager that reads content from the archive.
-            fn get_reader(&self) -> Result<ZipArchiveReader> {
                 let inner = self.file.reader()?;
                 match ZipArchive::new(BufReader::new(inner)) {
-                    Ok(reader) => Ok(reader),
+                    Ok(mut reader) => {
+                        let mut history_dates = Self::filter_history(&mut reader, filter);
+                        if sort {
+                            history_dates.sort()
+                        }
+                        Ok(ArchiveIter::new(&self.alias, reader, history_dates, builder))
+                    }
                     Err(err) => Err(archive_err!(&self.alias, &format!("get_reader error ({}).", &err))),
                 }
+            }
+            pub(in crate::backend) fn archive_writer(&mut self) -> ArchiveWriter {
+                ArchiveWriter::new(self)
             }
             /// Get the weather history dates in the archive.
             ///
@@ -554,7 +548,7 @@ mod v1 {
 
         /// A bean providing metrics about a weather history file in the archive.
         #[derive(Debug)]
-        pub struct ArchiveMd {
+        pub(in crate::backend) struct ArchiveMd {
             /// The location identifier.
             #[allow(unused)]
             pub alias: String,
@@ -576,7 +570,7 @@ mod v1 {
             /// * `alias` is the location identifier.
             /// * `date` is the date associated with the history file.
             /// * `zipfile` provides access to the history file metrics.
-            pub fn new(alias: &str, date: &NaiveDate, zipfile: ZipFile) -> Result<Self> {
+            pub(in crate::backend) fn new(alias: &str, date: &NaiveDate, zipfile: ZipFile) -> Result<Self> {
                 let mtime = Self::datetime_to_millis(alias, zipfile.last_modified());
                 Ok(Self {
                     alias: alias.to_string(),
@@ -592,7 +586,7 @@ mod v1 {
             ///
             /// * `alias` is the location identifier.
             /// * `datetime` is the `ZIP` file timestamp.
-            fn datetime_to_millis(alias: &str, datetime: DateTime) -> i64 {
+            pub(in crate::backend) fn datetime_to_millis(alias: &str, datetime: DateTime) -> i64 {
                 let default = DateTime::default();
                 if datetime.datepart() == default.datepart() && datetime.timepart() == default.timepart() {
                     0
@@ -621,9 +615,10 @@ mod v1 {
             }
         }
 
+        // #[deprecated]
         /// A bean providing the contents of a weather history file in the archive.
         #[derive(Debug)]
-        pub struct ArchiveData {
+        pub(in crate::backend) struct ArchiveData {
             /// The location identifier.
             pub alias: String,
             /// The date associated with the history file in the archive.
@@ -639,7 +634,7 @@ mod v1 {
             /// * `alias` is the location identifier.
             /// * `date` is the date of the weather history.
             /// * `zipfile` provides the contents of the history file in the archive.
-            pub fn new(alias: &str, date: &NaiveDate, mut zipfile: ZipFile) -> Result<Self> {
+            pub(in crate::backend) fn new(alias: &str, date: &NaiveDate, mut zipfile: ZipFile) -> Result<Self> {
                 let size = zipfile.size() as usize;
                 let mut data: Vec<u8> = Vec::with_capacity(size);
                 if let Err(err) = zipfile.read_to_end(&mut data) {
@@ -650,12 +645,12 @@ mod v1 {
                 }
             }
             /// Get the file contents as a slice of bytes.
-            fn bytes(&self) -> &[u8] {
+            pub(in crate::backend) fn bytes(&self) -> &[u8] {
                 &self.data
             }
             /// Get the file contents as a parsed `JSON` document.
-            pub fn json(&self) -> Result<json::Value> {
-                match bytes_to_json(self.bytes()) {
+            pub(in crate::backend) fn json(&self) -> Result<json::Value> {
+                match serde_json::from_reader(self.bytes()) {
                     Ok(json) => Ok(json),
                     Err(err) => {
                         let reason = format!("{} to JSON error ({})", isodate(&self.date), &err);
@@ -665,12 +660,11 @@ mod v1 {
             }
         }
 
-
         /// The function signature used by the weather archive iterator to create history data.
         type HistoryBuilder<T> = fn(&str, &NaiveDate, ZipFile) -> Result<T>;
 
         /// The low-level iterator over weather history in the archive.
-        pub struct ArchiveIter<T> {
+        pub(in crate::backend) struct ArchiveIter<T> {
             /// The location identifier.
             alias: String,
             /// The `ZIP` archive reader.
@@ -724,89 +718,172 @@ mod v1 {
             }
         }
 
-        /// Create the manager that writes weather data history to the archive.
-        struct ArchiveWriter {
-            /// The location identifier.
-            alias: String,
-            /// The `ZIP` file writer.
-            writer: ZipWriter<File>,
+        /// The manager that adds weather history to an archive.
+        #[derive(Debug)]
+        pub(in crate::backend) struct ArchiveWriter<'a> {
+            /// The archive that will be updated.
+            archive: &'a WeatherArchive,
+            /// The pathname of the archive that will actually have data added to it.
+            writable: PathBuf,
         }
-        impl ArchiveWriter {
-            /// Create a new instance of the weather writer.
+        impl<'a> ArchiveWriter<'a> {
+            /// The extension that identifies a writable archive.
+            const UPDATE_EXT: &str = "upd";
+            /// The extension that identifies an archive backup.
+            const BACKUP_EXT: &str = "bu";
+            /// Create a new instance of the archive writer.
             ///
             /// # Arguments
             ///
-            /// * `alias` is the location identifier.
-            /// * `writer` is the `ZIP` file writer.
-            fn new(alias: &str, writer: ZipWriter<File>) -> Self {
-                Self { alias: alias.to_string(), writer }
+            /// `archive` is what will be updated with new history.
+            fn new(archive: &'a WeatherArchive) -> Self {
+                let writable = archive.file.path().with_extension(Self::UPDATE_EXT);
+                Self { archive, writable }
             }
-            /// Add weather data to the archive.
+            /// Adds history to the archive.
             ///
             /// # Arguments
             ///
-            /// * `date` is the date of the weather history.
-            /// * `data` is the weather history data.
-            /// * `mtime` is the last modified time of the weather history.
-            fn add_data(&mut self, date: &NaiveDate, data: &[u8], mtime: i64) -> Result<()> {
-                let mod_time = Self::millis_to_datetime(&self.alias, mtime);
-                let filename = WeatherArchive::date_to_filename(&self.alias, &date);
-                let options = FileOptions::default().last_modified_time(mod_time);
-                if let Err(err) = self.writer.start_file(filename, options) {
-                    let reason = format!("{} write start_file err ({}).", date, &err);
-                    Err(archive_err!(&self.alias, reason))
-                } else if let Err(err) = self.writer.write_all(data) {
-                    let reason = format!("{} write start_all err ({}).", date, &err);
-                    Err(archive_err!(&self.alias, reason))
+            /// `histories` is what will be added to the archvie.
+            pub(in crate::backend) fn write(&mut self, histories: Vec<&History>) -> Result<()> {
+                let mut writer = self.open()?;
+                for history in histories {
+                    let data = history::to_bytes(history)?;
+                    self.write_history(&mut writer, &history.date, &data[..])?;
+                }
+                self.close(writer)
+            }
+            /// Writes history into the archive.
+            ///
+            /// # Arguments
+            ///
+            /// * `writer` will be used to add the history.
+            /// * `date` is the data associated with the history.
+            /// * `data` is the history serialized into a sequence of bytes.
+            fn write_history(&self, writer: &mut ZipWriter<File>, date: &NaiveDate, data: &[u8]) -> Result<()> {
+                let now = Utc::now().naive_utc();
+                let mtime = DateTime::from_date_and_time(
+                    now.year() as u16,
+                    now.month() as u8,
+                    now.day() as u8,
+                    now.hour() as u8,
+                    now.minute() as u8,
+                    now.second() as u8,
+                )
+                .unwrap();
+                let filename = WeatherArchive::date_to_filename(&self.archive.alias, date);
+                let options = FileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated)
+                    .last_modified_time(mtime);
+                if let Err(err) = writer.start_file(filename, options) {
+                    let reason = format!("{} start_file error ({}).", date, &err);
+                    Err(archive_err!(&self.archive.alias, reason))
+                } else if let Err(err) = writer.write_all(data) {
+                    let reason = format!("{} write_all err ({}).", date, &err);
+                    Err(archive_err!(&self.archive.alias, reason))
                 } else {
                     Ok(())
                 }
             }
-            /// Add weather data to the archive.
+            /// Creates the [ZipWriter] that will update the archive.
             ///
-            /// # Arguments
-            ///
-            /// * `date` is the date of the weather history.
-            /// * `json` is the weather history data.
-            /// * `mtime` is the last modified time of the weather history.
-            fn add_json(&mut self, date: &NaiveDate, data: &json::Value, mtime: i64) -> Result<()> {
-                let vec_result: std::result::Result<Vec<u8>, json::Error> = json::to_vec(data);
-                match vec_result {
-                    Ok(data) => self.add_data(date, &data, mtime),
+            /// In order to add data the archive is first copied to the writable path. When done adding history the
+            /// archive will be restored when the [ZipWriter] is closed.
+            fn open(&self) -> Result<ZipWriter<File>> {
+                self.copy(self.archive.file.path(), &self.writable)?;
+                match File::options().read(true).write(true).open(&self.writable) {
+                    Ok(file) => match ZipWriter::new_append(file) {
+                        Ok(zip_writer) => Ok(zip_writer),
+                        Err(err) => {
+                            let reason = format!("'{}' zip writer error ({}).", self.archive.file.filename, err);
+                            Err(archive_err!(&self.archive.alias, reason))
+                        }
+                    },
                     Err(err) => {
-                        let reason = format!("{} from JSON error ({})", isodate(&date), &err);
-                        Err(archive_err!(&self.alias, reason))
+                        let reason = format!("error open writable archive ({}).", &err);
+                        Err(archive_err!(&self.archive.alias, reason))
                     }
                 }
             }
-            /// Convert milliseconds to a `ZIP` date time.
+            /// Close the [ZipWriter] and restore the archive.
+            ///
+            /// When the archive is opened a copy is made and a [ZipWriter] returned that will be used. After it
+            /// is closed, the updated archive replaces the original.
             ///
             /// # Arguments
             ///
-            /// * `alias` is the location identifier.
-            /// * `millis` is the timestamp in milliseconds.
-            fn millis_to_datetime(alias: &str, millis: i64) -> DateTime {
-                match NaiveDateTime::from_timestamp_millis(millis) {
-                    Some(naive_datetime) => match naive_datetime.year() {
-                        year if year < 1980 || year > 2107 => {
-                            let err = archive_err!(alias, format!("illegal year '{}'", year));
-                            log::error!("{}", &err);
-                            DateTime::default()
+            /// * `writer` is what was used to update the archive histories.
+            fn close(&self, writer: ZipWriter<File>) -> Result<()> {
+                drop(writer);
+                // try to safely replace the updated archive
+                let backup = self.archive.file.path().with_extension(Self::BACKUP_EXT);
+                match self.copy(self.archive.file.path(), &backup) {
+                    Ok(_) => match fs::rename(&self.writable, &self.archive.file.path()) {
+                        Ok(_) => {
+                            match fs::remove_file(&backup) {
+                                Ok(_) => (),
+                                Err(err) => {
+                                    log::warn!("error removing archive backup {} ({})", backup.display(), err);
+                                }
+                            };
+                            Ok(())
                         }
-                        year => {
-                            let month = naive_datetime.month() as u8;
-                            let day = naive_datetime.day() as u8;
-                            let hour = naive_datetime.hour() as u8;
-                            let minute = naive_datetime.minute() as u8;
-                            let second = naive_datetime.second() as u8;
-                            // it should be safe to ignore the result since the bounds are checked
-                            DateTime::from_date_and_time(year as u16, month, day, hour, minute, second).unwrap()
+                        Err(err) => {
+                            // try to restore the original archive
+                            match fs::rename(&backup, self.archive.file.path()) {
+                                Ok(_) => log::info!("{}: original archive restored.", self.archive.alias),
+                                Err(err) => {
+                                    log::error!("{}: error restoring original archive ({}).", self.archive.alias, err)
+                                }
+                            };
+                            let reason = format!("error replacing updated archive ({})", err);
+                            Err(archive_err!(&self.archive.alias, reason))
                         }
                     },
-                    None => {
-                        let err = archive_err!(alias, format!("NaiveDateTime error {}ms", millis));
-                        log::error!("{}", &err);
-                        DateTime::default()
+                    Err(err) => {
+                        let reason = format!("error creating archive backup {} ({})", backup.display(), err);
+                        Err(archive_err!(&self.archive.alias, reason))
+                    }
+                }
+            }
+            fn copy(&self, from: &Path, to: &Path) -> Result<()> {
+                match fs::copy(from, to) {
+                    Ok(_) => {
+                        #[cfg(unix)]
+                        {
+                            // before running on Unix you need to set check/set file permissions
+                        }
+                        Ok(())
+                    }
+                    Err(err) => {
+                        let from_name = from.file_name().unwrap().to_str().unwrap();
+                        let to_name = to.file_name().unwrap().to_str().unwrap();
+                        let reason = format!("error copying {} to {} ({})", from_name, to_name, err);
+                        Err(archive_err!(&self.archive.alias, reason))
+                    }
+                }
+            }
+        }
+        impl<'a> Drop for ArchiveWriter<'a> {
+            /// If something bad happens adding history, this attempts to clean up files that might be
+            /// left hanging around.
+            fn drop(&mut self) {
+                // do your best to clean up
+                if self.writable.exists() {
+                    match fs::remove_file(&self.writable) {
+                        Ok(_) => (),
+                        Err(err) => {
+                            log::warn!("Drop: error deleting {} ({}).", self.writable.display(), err);
+                        }
+                    }
+                }
+                let backup = self.archive.file.path().with_extension(Self::BACKUP_EXT);
+                if backup.exists() {
+                    match fs::remove_file(&backup) {
+                        Ok(_) => (),
+                        Err(err) => {
+                            log::warn!("Drop: error deleting {} ({}).", backup.display(), err);
+                        }
                     }
                 }
             }
@@ -815,7 +892,7 @@ mod v1 {
         #[cfg(test)]
         mod test {
             use super::*;
-            use toolslib::date_time::{get_date, isodate};
+            use toolslib::date_time::get_date;
 
             #[test]
             fn create_open() {
@@ -890,190 +967,41 @@ mod v1 {
             }
 
             #[test]
-            fn datetime_convert() {
-                // lower bounds
-                let ts = NaiveDateTime::new(
-                    NaiveDate::from_ymd_opt(1980, 1, 1).unwrap(),
-                    NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
-                )
-                .timestamp_millis();
-                let expected = DateTime::default();
-                let testcase = ArchiveWriter::millis_to_datetime("test", ts);
-                assert_eq!(testcase.datepart(), expected.datepart());
-                assert_eq!(testcase.timepart(), expected.timepart());
-                // upper bounds
-                let ts = NaiveDateTime::new(
-                    NaiveDate::from_ymd_opt(2107, 12, 31).unwrap(),
-                    NaiveTime::from_hms_opt(23, 59, 59).unwrap(),
-                )
-                .timestamp_millis();
-                let expected = DateTime::from_date_and_time(2107, 12, 31, 23, 59, 59).unwrap();
-                let testcase = ArchiveWriter::millis_to_datetime("test", ts);
-                assert_eq!(testcase.datepart(), expected.datepart());
-                assert_eq!(testcase.timepart(), expected.timepart());
-                let testcase = ArchiveMd::datetime_to_millis("test", testcase);
-                assert_eq!(testcase, ts);
-                // upper out of bounds
-                let ts = NaiveDateTime::new(
-                    NaiveDate::from_ymd_opt(2108, 1, 1).unwrap(),
-                    NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
-                )
-                .timestamp_millis();
-                let expected = DateTime::default();
-                let testcase = ArchiveWriter::millis_to_datetime("test", ts);
-                assert_eq!(testcase.datepart(), expected.datepart());
-                assert_eq!(testcase.timepart(), expected.timepart());
-            }
-
-            #[test]
             fn writer() {
-                // create the test archive
-                let test_fixture = testlib::TestFixture::create();
-                let weather_dir = WeatherDir::try_from(test_fixture.to_string()).unwrap();
-                let alias = "writertest";
-                let mut file = weather_dir.archive(alias);
-                // JIC it's not a test fixture diretory
-                if file.exists() {
-                    match std::fs::remove_file(&file.to_string()) {
-                        Ok(_) => file.refresh(),
-                        Err(err) => eprintln!("{}: {}", &file, &err),
-                    }
-                }
-                let mut testcase = WeatherArchive::create(alias, file).unwrap();
-
-                // test helpers
-                fn mk_data(date: &NaiveDate) -> String {
-                    format!(r#"{{"date":"{}"}}"#, isodate(date))
-                }
-                fn mk_mtime(date: &NaiveDate, hour: usize) -> i64 {
-                    let time = NaiveTime::from_hms_opt(hour as u32, 0, 0).unwrap();
-                    let mtime_ts = NaiveDateTime::new(date.clone(), time);
-                    (mtime_ts - NaiveDateTime::default()).num_milliseconds()
-                }
-
-                // write some JSON to the archive
-                let history_range = DateRange::new(get_date(2023, 7, 1), get_date(2023, 7, 4));
-                let history_dates = history_range.as_iter().collect::<Vec<NaiveDate>>();
-                for (hour, date) in history_dates.iter().enumerate() {
-                    let data = mk_data(date);
-                    let value: json::Value = json::from_str(&data).unwrap();
-                    let mtime = mk_mtime(date, hour);
-                    testcase.add_data(date, &value, mtime).unwrap();
-                }
-
-                // now spot check the archive metadata
-                let date_iter = history_dates.iter();
-                // let md_iter = testcase.metadata(Some(&history_range), true).unwrap();
-                let md_iter = testcase.archive_iter(Some(&history_range), true, ArchiveMd::new).unwrap();
-                for (hour, (date, archive_md)) in std::iter::zip(date_iter, md_iter).enumerate() {
-                    assert_eq!(date, &archive_md.date);
-                    assert_eq!(mk_mtime(date, hour), archive_md.mtime);
-                }
-
-                // now spot check the archive content
-                let date_iter = history_dates.iter();
-                let data_iter = testcase.archive_iter(Some(&history_range), true, ArchiveData::new).unwrap();
-                for (date, data) in std::iter::zip(date_iter, data_iter) {
-                    let json = data.json().unwrap().to_string();
-                    assert_eq!(json, mk_data(date));
-                }
+                // setup the testcase
+                let fixture = testlib::TestFixture::create();
+                let weather_path = PathBuf::from(&fixture);
+                let weather_dir = WeatherDir::new(weather_path.clone()).unwrap();
+                let archive_file = weather_dir.archive("test");
+                let mut archive = WeatherArchive::create("test", archive_file).unwrap();
+                let original_archive_len = archive.file.size();
+                let archive_writer = ArchiveWriter::new(&archive);
+                // spot check opening
+                let mut zip_writer = archive_writer.open().unwrap();
+                let update_file = archive.file.path().with_extension(ArchiveWriter::UPDATE_EXT);
+                assert!(archive.file.exists());
+                assert!(update_file.exists());
+                // spot check writing to the archive
+                let history_data = "Content doesn't matter to the writer...";
+                let date = NaiveDate::from_ymd_opt(2023, 9, 20).unwrap();
+                archive_writer.write_history(&mut zip_writer, &date, history_data.as_bytes()).unwrap();
+                // spot check closing
+                archive_writer.close(zip_writer).unwrap();
+                assert!(!update_file.exists());
+                assert!(!archive.file.path().with_extension(ArchiveWriter::BACKUP_EXT).exists());
+                drop(archive_writer);
+                archive.file.refresh();
+                assert_ne!(original_archive_len, archive.file.size());
+                let mut iter = archive.archive_iter(None, false, ArchiveMd::new).unwrap();
+                let md = iter.next().unwrap();
+                assert_eq!(md.alias, "test");
+                assert_eq!(md.date, date);
+                assert!(iter.next().is_none());
             }
 
             #[allow(unused)]
             // of course this is hard coded to my workstation
             const SOURCE_WEATHER_DATA: &str = r"C:\Users\rncru\dev\weather_data";
-
-            // create the metadata test archive
-            // #[test]
-            #[allow(unused)]
-            fn create_test_metadata_archive() {
-                // setup the test archive
-                let to_lid = "testmd";
-                let resources = testlib::test_resources().join("filesys");
-                let to_dir = WeatherDir::new(resources).unwrap();
-                let mut to_file = to_dir.archive(to_lid);
-                if to_file.exists() {
-                    let archive_name = to_file.to_string();
-                    eprintln!("removing {}", archive_name);
-                    std::fs::remove_file(archive_name).unwrap();
-                    to_file.refresh();
-                }
-                let mut to = WeatherArchive::create(to_lid, to_file).unwrap();
-                // setup the source archive
-                let from_lid = "tigard";
-                let from_dir = WeatherDir::try_from(SOURCE_WEATHER_DATA).unwrap();
-                let from_file = from_dir.archive(from_lid);
-                let from = WeatherArchive::open(from_lid, from_file).unwrap();
-                // now copy the test data
-                let histories = vec![
-                    DateRange::new(get_date(2014, 4, 1), get_date(2014, 4, 7)),
-                    DateRange::new(get_date(2015, 5, 8), get_date(2015, 5, 14)),
-                    DateRange::new(get_date(2016, 6, 15), get_date(2016, 6, 21)),
-                    DateRange::new(get_date(2017, 7, 22), get_date(2017, 7, 28)),
-                ];
-                for history_range in &histories {
-                    let mds = from.archive_iter(Some(history_range), true, ArchiveMd::new).unwrap();
-                    let histories = from.archive_iter(Some(history_range), true, ArchiveData::new).unwrap();
-                    let bulk: Vec<(NaiveDate, Vec<u8>, i64)> = std::iter::zip(mds, histories)
-                        .map(|(md, history)| {
-                            assert_eq!(md.date, history.date);
-                            (md.date, history.data, md.mtime)
-                        })
-                        .collect();
-                    to.add_bulk(bulk.into_iter()).unwrap();
-                }
-            }
-
-            #[allow(unused)]
-            // #[test]
-            fn create_test_archives() {
-                // the from archive to test archive mappings
-                let from_to = vec![("tigard", "north"), ("carson_city_nv", "between"), ("tucson", "south")];
-                // the directory helpers
-                let from_dir = WeatherDir::try_from(SOURCE_WEATHER_DATA).unwrap();
-                let resources = testlib::test_resources().join("filesys");
-                let dst_dir = WeatherDir::new(resources).unwrap();
-                // make sure the destinations are pristine
-                from_to.iter().for_each(|(_, to_alias)| {
-                    let to_file = dst_dir.archive(&to_alias);
-                    if to_file.exists() {
-                        eprintln!("removing test resource: {:?}", to_file);
-                        std::fs::remove_file(&to_file.to_string()).unwrap();
-                    }
-                    WeatherArchive::create(to_alias, dst_dir.archive(to_alias)).unwrap();
-                });
-                // these are the history ranges to mine from the real weather data
-                let history_dates = vec![
-                    DateRange::new(get_date(2015, 4, 1), get_date(2015, 4, 14)),
-                    DateRange::new(get_date(2016, 10, 10), get_date(2016, 10, 17)),
-                    DateRange::new(get_date(2017, 7, 14), get_date(2017, 7, 20)),
-                    DateRange::new(get_date(2018, 1, 1), get_date(2018, 1, 7)),
-                ];
-                // walk the history ranges and mine the history
-                history_dates.iter().for_each(|history_range| {
-                    from_to.iter().for_each(|(from_id, to_id)| {
-                        let from_file = from_dir.archive(&from_id);
-                        let mut from_archive = ZipArchive::new(from_file.reader().unwrap()).unwrap();
-                        let to_file = dst_dir.file(&to_id);
-                        let mut to_archive = ZipWriter::new_append(to_file.writer().unwrap()).unwrap();
-                        history_range.as_iter().for_each(|date| {
-                            let from_filename = WeatherArchive::date_to_filename(from_id, &date);
-                            match from_archive.by_name(&from_filename) {
-                                Ok(file) => {
-                                    let to_filename = WeatherArchive::date_to_filename(to_id, &date);
-                                    to_archive.raw_copy_file_rename(file, &to_filename).unwrap();
-                                }
-                                Err(err) => match err {
-                                    zip::result::ZipError::FileNotFound => {
-                                        eprintln!("{} not found...", from_filename)
-                                    }
-                                    _ => panic!("error getting {}: {}", from_filename, err.to_string()),
-                                },
-                            }
-                        })
-                    });
-                });
-            }
         }
     }
 
@@ -1088,7 +1016,7 @@ mod v1 {
         /// The name of the locations document in the weather data directory.
         pub const LOCATIONS_FILENAME: &str = "locations.json";
 
-        /// The [WeatherLocations] error builder.
+        /// The [Locations] error builder.
         macro_rules! locations_err {
             ($reason:expr) => {
                 Error::from(format!("WeatherLocations: {}", $reason))
@@ -1138,10 +1066,10 @@ mod v1 {
             /// # Arguments
             ///
             /// * `filters` are used to scope which locations will be returned.
-            /// * `case_sensitive` will make filters case sensitive (`true`) or ignore case (`false`).
+            /// * `icase` will make filters case sensitive (`true`) or ignore case (`false`).
             /// * `sort` will order the matching locations by their name.
-            pub fn as_iter(&self, patterns: &Vec<String>, case_sensitive: bool, sort: bool) -> LocationsIter {
-                let prepare = |text: &str| if case_sensitive { text.to_string() } else { text.to_lowercase() };
+            pub fn as_iter(&self, patterns: &Vec<String>, icase: bool, sort: bool) -> LocationsIter {
+                let prepare = |text: &str| if icase { text.to_string() } else { text.to_lowercase() };
                 let mut locations: Vec<&LocationMd> = if patterns.is_empty() {
                     self.0.iter().collect()
                 } else {
@@ -1359,9 +1287,9 @@ mod v1 {
     mod adapter {
         //! The archive based implementation of the [DataAdapter].
 
-        use super::{weather_dir, weather_locations, WeatherDir, WeatherHistory};
+        use super::{weather_dir, weather_locations, WeatherDir, WeatherHistory, WeatherHistoryUpdate};
         use crate::{
-            backend::{DataAdapter, Error, Result},
+            backend::{DataAdapter, Result},
             prelude::{DailyHistories, DataCriteria, DateRange, HistoryDates, HistorySummaries, Location},
         };
         use toolslib::stopwatch::StopWatch;
@@ -1378,6 +1306,7 @@ mod v1 {
             Ok(Box::new(ArchiveDataAdapter(weather_dir(dirname)?)))
         }
 
+        /// Consolidate logging elapsed time here.
         macro_rules! log_elapsed {
             (trace, $what:expr, $stopwatch:expr) => {
                 log::trace!("ArchiveDataAdapter: {} {}", $what, $stopwatch)
@@ -1386,8 +1315,9 @@ mod v1 {
                 log::debug!("ArchiveDataAdapter: {} {}", $what, $stopwatch)
             };
         }
+
         /// The archive implemenation of a [DataAdapter].
-        pub(crate) struct ArchiveDataAdapter(
+        pub(in crate::backend) struct ArchiveDataAdapter(
             /// The directory containing weather data files
             WeatherDir,
         );
@@ -1412,22 +1342,14 @@ mod v1 {
             ///
             /// # Arguments
             ///
-            /// * `criteria` identifies what location should be used.
+            /// * `location` identifies what location should be used.
             /// * `history_range` specifies the date range that should be used.
-            fn daily_histories(&self, criteria: DataCriteria, history_range: DateRange) -> Result<DailyHistories> {
-                let mut locations = self.locations(criteria)?;
-                match locations.len() {
-                    1 => {
-                        let stopwatch = StopWatch::start_new();
-                        let location = locations.pop().unwrap();
-                        let archive = self.get_archive(&location.alias)?;
-                        let daily_histories = archive.daily_histories(&history_range)?;
-                        log_elapsed!("daily_histories", &stopwatch);
-                        Ok(DailyHistories { location, daily_histories })
-                    }
-                    0 => Err(Error::from("A location was not found.")),
-                    _ => Err(Error::from("Multiple locations were found.")),
-                }
+            fn daily_histories(&self, location: Location, history_range: DateRange) -> Result<DailyHistories> {
+                let stopwatch = StopWatch::start_new();
+                let archive = self.get_archive(&location.alias)?;
+                let daily_histories = archive.daily_histories(&history_range)?;
+                log_elapsed!("daily_histories", &stopwatch);
+                Ok(DailyHistories { location, histories: daily_histories })
             }
             /// Get the weather history dates for locations.
             ///
@@ -1465,7 +1387,7 @@ mod v1 {
                         count: summary.count,
                         overall_size: summary.overall_size,
                         raw_size: summary.raw_size,
-                        compressed_size: summary.compressed_size,
+                        store_size: summary.compressed_size,
                     });
                 }
                 log_elapsed!("history_summaries", &stopwatch);
@@ -1483,6 +1405,646 @@ mod v1 {
                 log_elapsed!("locations", &stopwatch);
                 Ok(locations)
             }
+            /// Add weather data history for a location.
+            ///
+            /// # Arguments
+            ///
+            /// * `daily_histories` has the loation and histories to add.
+            fn add_histories(&self, daily_histories: &DailyHistories) -> Result<usize> {
+                let location = &daily_histories.location;
+                let file = self.0.archive(&location.alias);
+                let mut archive_updater = WeatherHistoryUpdate::new(&location.alias, file)?;
+                let additions = archive_updater.add(&daily_histories.histories)?;
+                Ok(additions)
+            }
+        }
+    }
+}
+
+pub(crate) use admin::{migrate_history, MigrateConfig};
+mod admin {
+    //! Isolates the adminstration API from the weather API.
+
+    use super::*;
+    use crate::{
+        backend::{Error, Result},
+        entities::{DataCriteria, History, Location},
+    };
+    use chrono::{NaiveDate, NaiveDateTime};
+    use std::{
+        env, fs,
+        io::Read,
+        path::{Path, PathBuf},
+    };
+    use zip::read::ZipFile;
+
+    /// The common error
+    macro_rules! error {
+        ($reason:expr) => {
+            Err(Error::from($reason))
+        };
+    }
+
+    #[derive(Debug)]
+    /// The metadata surrounding migrating old data to [History].
+    pub(crate) struct MigrateConfig<'w> {
+        /// The old history weather data directory.
+        pub source: &'w WeatherDir,
+        /// Create the target weather data directory if it does not exist.
+        pub create: bool,
+        /// Do not delete existing data in the target archive.
+        pub retain: bool,
+        /// The locations that will be migrated.
+        pub criteria: DataCriteria,
+    }
+
+    /// Migrate existing weather history to [History].
+    ///
+    /// # Arguments
+    ///
+    /// * `config` is the migration configuration.
+    /// * `target` is the weather data directory where archives will be updated.
+    pub(crate) fn migrate_history(config: MigrateConfig, target: PathBuf) -> Result<usize> {
+        let to_path = verify_target(&target, config.create)?;
+        let from_path = canonicalize_path(config.source.path())?;
+        if to_path == from_path {
+            error!("The target directory cannot be the same as the weather data directory.")
+        } else {
+            let target = if env::consts::OS == "windows" {
+                // remove the \\?\ from the windows path, it's annoying
+                WeatherDir::new(PathBuf::from(&to_path.display().to_string()[4..]))?
+            } else {
+                WeatherDir::new(to_path)?
+            };
+            let locations = weather_locations(config.source)?
+                .as_iter(&config.criteria.filters, config.criteria.icase, config.criteria.sort)
+                .collect::<Vec<Location>>();
+            darksky::migrate(config.source, &target, &locations, config.retain)
+        }
+    }
+
+    /// Make sure the target directory can be used.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` is the target weather data directory.
+    /// * `create` indicates the target directory should be created if it does not exist.
+    fn verify_target(target: &PathBuf, create: bool) -> Result<PathBuf> {
+        match target.exists() {
+            true => canonicalize_path(target),
+            false => match create {
+                true => match fs::create_dir_all(target) {
+                    Ok(_) => canonicalize_path(target),
+                    Err(err) => {
+                        let reason = format!("Error creating {} ({}).", target.display(), err);
+                        error!(reason)
+                    }
+                },
+                false => {
+                    let reason = format!("The directory '{}' does not exist.", target.display());
+                    error!(reason)
+                }
+            },
+        }
+    }
+
+    /// Creates an absolute path to the weather data directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` is the directory name.
+    fn canonicalize_path(path: &Path) -> Result<PathBuf> {
+        match fs::canonicalize(path) {
+            Ok(path) => Ok(path),
+            Err(err) => {
+                let reason = format!("Error getting absolute path for {} ({}).", path.display(), err);
+                error!(reason)
+            }
+        }
+    }
+
+    mod darksky {
+        //! Isolate the Darksky conversion to this module.
+        use super::*;
+        use serde::{Deserialize, Serialize};
+
+        /// The entry point to migrate *DarkSky* weather history to [History].
+        ///
+        /// # Arguments
+        ///
+        /// * `source_dir` is the *DarkSky* weather data directory.
+        /// * `target_dir` is where migrated weather data will be written.
+        /// * `locations` identifies what data will be migrated.
+        /// * `retain` indicates existing data in the target archive should not be deleted.
+        pub(super) fn migrate(
+            source_dir: &WeatherDir,
+            target_dir: &WeatherDir,
+            locations: &Vec<Location>,
+            retain: bool,
+        ) -> Result<usize> {
+            let mut migrate_count = 0;
+            for location in locations {
+                let source = WeatherArchive::open(&location.alias, source_dir.archive(&location.alias))?;
+                let target = target_archive(&location.alias, target_dir.archive(&location.alias), retain)?;
+                let count = migrate_archive(&location.alias, source, target)?;
+                migrate_count += count;
+            }
+            Ok(migrate_count)
+        }
+
+        /// Prepares the target weather data archive.
+        ///
+        /// # Arguments
+        ///
+        /// * `alias` is the location alias name.
+        /// * `weather_file` is the target archive that will be updated.
+        /// * `retain` indicates existing data in the target archive should not be deleted.
+        fn target_archive(alias: &str, weather_file: WeatherFile, retain: bool) -> Result<WeatherArchive> {
+            if !weather_file.exists() {
+                WeatherArchive::create(alias, weather_file)
+            } else if retain {
+                WeatherArchive::open(alias, weather_file)
+            } else {
+                // remove_file can be lazy so rename the file before deleting
+                let old = weather_file.path().with_extension("old");
+                if let Err(err) = fs::rename(weather_file.path(), &old) {
+                    let reason = format!("Could not rename '{}' to '{}' ({}).", &weather_file, old.display(), err);
+                    error!(reason)
+                } else if let Err(err) = fs::remove_file(&old) {
+                    let reason = format!("Could not remove '{}' ({}).", old.display(), err);
+                    error!(reason)
+                } else {
+                    WeatherArchive::create(alias, weather_file)
+                }
+            }
+        }
+
+        /// Migrate existing weather history to [History].
+        ///
+        /// # Arguments
+        ///
+        /// * `alias` is the locations alias name.
+        /// * `source` is the source weather history archive.
+        /// * `target` is the target weather history archive.
+        fn migrate_archive(alias: &str, source: WeatherArchive, mut target: WeatherArchive) -> Result<usize> {
+            // need to think more about exposing the alias name in the weather archive.
+            log::info!("Migrating '{}'", alias);
+            let migrations: Vec<MigrationData> = source.archive_iter(None, false, MigrationData::new)?.collect();
+            let mut histories: Vec<History> = Vec::with_capacity(migrations.len());
+            for md in migrations {
+                let darksky = md.to_darksky()?;
+                histories.push(darksky.into_history(alias, &md.date));
+            }
+            let mut archive_writer = target.archive_writer();
+            archive_writer.write(histories.iter().map(|h| h).collect())?;
+            Ok(histories.len())
+        }
+
+        #[derive(Debug)]
+        /// The metadata used to migrate existing weather history.
+        struct MigrationData {
+            /// The locations alias name.
+            alias: String,
+            /// The date associated with the weather history.
+            date: NaiveDate,
+            /// The weather history data.
+            data: Vec<u8>,
+        }
+        impl MigrationData {
+            /// Used by the archive iterator to create an instance of the migration metadata.
+            ///
+            /// # Arguments
+            ///
+            /// * `alias` is the locations alias name.
+            /// * `date` is the weather history date.
+            /// * `zipfile` is the archive file holding weather history.
+            pub fn new(alias: &str, date: &NaiveDate, mut zipfile: ZipFile) -> Result<Self> {
+                let size = zipfile.size() as usize;
+                let mut data: Vec<u8> = Vec::with_capacity(size);
+                if let Err(err) = zipfile.read_to_end(&mut data) {
+                    let reason = format!("MigrationData ({}): error reading {} history ({})", alias, date, err);
+                    error!(reason)
+                } else {
+                    Ok(Self { alias: alias.to_string(), date: date.clone(), data })
+                }
+            }
+            /// Deserialize the history data into [DarkskyHistory].
+            fn to_darksky(&self) -> Result<DarkskyHistory> {
+                match serde_json::from_slice::<DarkskyHistory>(&self.data) {
+                    Ok(history) => Ok(history),
+                    Err(err) => {
+                        let reason = format!(
+                            "MigrationData ({}): {} error creating Darksky history ({})",
+                            self.alias, self.date, err
+                        );
+                        error!(reason)
+                    }
+                }
+            }
+        }
+
+        #[derive(Debug, Serialize, Deserialize)]
+        /// The *DarkSky* document.
+        struct DarkskyHistory {
+            daily: DarkskyDaily,
+            hourly: DarkskyHourly,
+            latitude: f64,
+            longitude: f64,
+            offset: i64,
+            timezone: String,
+        }
+        /// Returns a reference to the daily weather history.
+        macro_rules! daily {
+            ($self:expr) => {
+                &$self.daily.data[0]
+            };
+        }
+        /// Returns an iterator to the hourly weather history.
+        macro_rules! hourly_iter {
+            ($self:expr) => {
+                $self.hourly.data.iter()
+            };
+        }
+        /// Consolidate what happens if weather history cannot be derived.
+        macro_rules! map_or_default {
+            ($option:expr, $what:literal) => {
+                match $option {
+                    Some(value) => Some(value),
+                    None => {
+                        log::trace!("{} has no value, using default.", $what);
+                        None
+                    }
+                }
+            };
+        }
+        impl DarkskyHistory {
+            /// Convert *DarkSky* weather history into [History].
+            ///
+            /// # Arguments
+            ///
+            /// * `alias` is the location alias name.
+            /// * `date` is the weather history date.
+            fn into_history(&self, alias: &str, date: &NaiveDate) -> History {
+                let daily = daily!(self);
+                History {
+                    alias: alias.to_string(),
+                    date: date.clone(),
+                    temperature_high: self.temperature_high(),
+                    temperature_low: self.temperature_low(),
+                    temperature_mean: self.temperature_mean(),
+                    dew_point: self.dew_point(),
+                    humidity: self.humidity(),
+                    precipitation_chance: self.precipitation_chance(),
+                    precipitation_type: daily.precipType.clone(),
+                    precipitation_amount: self.precip(),
+                    wind_speed: self.wind_speed(),
+                    wind_gust: self.wind_gust(),
+                    wind_direction: self.wind_bearing(),
+                    cloud_cover: self.cloud_cover(),
+                    pressure: self.pressure(),
+                    uv_index: self.uv_index(),
+                    sunrise: daily.sunriseTime.map_or(None, |ts| NaiveDateTime::from_timestamp_opt(ts, 0)),
+                    sunset: daily.sunsetTime.map_or(None, |ts| NaiveDateTime::from_timestamp_opt(ts, 0)),
+                    moon_phase: daily.moonPhase,
+                    visibility: self.visibility(),
+                    description: daily.summary.clone(),
+                }
+            }
+            /// Extracts the daily high temperature
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            ///
+            /// * daily `temperatureHigh`
+            /// * daily `temperatureMax`
+            /// * daily `apparentTemperatureHigh`
+            /// * daily `apparentTemperatureMax`
+            /// * hourly `temperature`
+            fn temperature_high(&self) -> Option<f64> {
+                let daily = daily!(self);
+                match daily.temperatureHigh {
+                    Some(t) => Some(t),
+                    None => match daily.temperatureMax {
+                        Some(t) => Some(t),
+                        None => match daily.apparentTemperatureHigh {
+                            Some(t) => Some(t),
+                            None => match daily.apparentTemperatureMax {
+                                Some(t) => Some(t),
+                                None => {
+                                    let temp = hourly_iter!(self).filter_map(|h| h.temperature).reduce(f64::max);
+                                    map_or_default!(temp, "temperature_max")
+                                }
+                            },
+                        },
+                    },
+                }
+            }
+            /// Extracts the daily low temperature
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            ///
+            /// * daily `temperatureLow`
+            /// * daily `temperatureMin`
+            /// * daily `apparentTemperatureMin`
+            /// * daily `apparentTemperatureMin`
+            /// * hourly `temperature`
+            fn temperature_low(&self) -> Option<f64> {
+                let daily = daily!(self);
+                match daily.temperatureLow {
+                    Some(t) => Some(t),
+                    None => match daily.temperatureMin {
+                        Some(t) => Some(t),
+                        None => match daily.apparentTemperatureMin {
+                            Some(t) => Some(t),
+                            None => match daily.apparentTemperatureMin {
+                                Some(t) => Some(t),
+                                None => {
+                                    let temp = hourly_iter!(self).filter_map(|h| h.temperature).reduce(f64::min);
+                                    map_or_default!(temp, "temperature_min")
+                                }
+                            },
+                        },
+                    },
+                }
+            }
+            /// Calculate the daily mean temperature from hourly history.
+            fn temperature_mean(&self) -> Option<f64> {
+                let temps: Vec<f64> = hourly_iter!(self).filter_map(|h| h.temperature).collect();
+                if temps.is_empty() {
+                    log::trace!("temperature_mean has no value, using default");
+                    None
+                } else {
+                    let mean_temp = temps.iter().sum::<f64>() / temps.len() as f64;
+                    Some((mean_temp * 100.0).round() / 100.0)
+                }
+            }
+            /// Extract the daily dew point.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `dewPoint`
+            /// * hourly `dewPoint`
+            fn dew_point(&self) -> Option<f64> {
+                match daily!(self).dewPoint {
+                    Some(dew_point) => Some(dew_point),
+                    None => {
+                        let dew_point = hourly_iter!(self).filter_map(|h| h.dewPoint).reduce(f64::max);
+                        map_or_default!(dew_point, "dew_point")
+                    }
+                }
+            }
+            /// Extract the daily humidity.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `humidity`
+            /// * hourly `humidity`
+            fn humidity(&self) -> Option<f64> {
+                match daily!(self).humidity {
+                    Some(humidity) => Some(humidity),
+                    None => {
+                        let humidity = hourly_iter!(self).filter_map(|h| h.humidity).reduce(f64::max);
+                        map_or_default!(humidity, "humidity")
+                    }
+                }
+            }
+            /// Extract the chance of precipitation.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `precipProbability`
+            /// * hourly `precipProbability`
+            fn precipitation_chance(&self) -> Option<f64> {
+                match daily!(self).precipProbability {
+                    Some(chance) => Some(chance),
+                    None => {
+                        let probablities: Vec<f64> = hourly_iter!(self).filter_map(|h| h.precipProbability).collect();
+                        if probablities.is_empty() {
+                            log::trace!("probabilities has no value, using default.");
+                            None
+                        } else {
+                            let chance = probablities.iter().sum::<f64>() / probablities.len() as f64;
+                            Some((chance * 100.0).round() / 100.0)
+                        }
+                    }
+                }
+            }
+            /// Extract the amount of precipitation.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `precipIntensity`
+            /// * hourly `precipIntensity`
+            fn precip(&self) -> Option<f64> {
+                let precip = match daily!(self).precipIntensity {
+                    Some(p) => p * 24 as f64,
+                    None => hourly_iter!(self).filter_map(|h| h.precipIntensity).sum::<f64>(),
+                };
+                Some(precip)
+            }
+            /// Extract the daily wind speed.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `windSpeed`
+            /// * hourly `windSpeed`
+            fn wind_speed(&self) -> Option<f64> {
+                match daily!(self).windSpeed {
+                    Some(speed) => Some(speed),
+                    None => {
+                        let speeds = hourly_iter!(self).filter_map(|md| md.windSpeed).collect::<Vec<f64>>();
+                        if speeds.is_empty() {
+                            log::trace!("wind_speed has no value, using default.");
+                            None
+                        } else {
+                            let speed = speeds.iter().sum::<f64>() / speeds.len() as f64;
+                            Some((speed * 100.0).round() / 100.0)
+                        }
+                    }
+                }
+            }
+            /// Extract the daily wind gust speed.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `windGust`
+            /// * hourly `windGust`
+            fn wind_gust(&self) -> Option<f64> {
+                match daily!(self).windGust {
+                    Some(gust) => Some(gust),
+                    None => {
+                        let gust = hourly_iter!(self).filter_map(|md| md.windGust).reduce(f64::max);
+                        map_or_default!(gust, "wind_gust")
+                    }
+                }
+            }
+            /// Extract the daily wind bearing.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `windBearing`
+            /// * hourly `windBearing`
+            fn wind_bearing(&self) -> Option<i64> {
+                match daily!(self).windBearing {
+                    Some(bearing) => Some(bearing),
+                    None => {
+                        let bearings = hourly_iter!(self).filter_map(|md| md.windBearing).collect::<Vec<i64>>();
+                        if bearings.is_empty() {
+                            log::trace!("wind_bearing has no value, using default.");
+                            None
+                        } else {
+                            let bearing = bearings.iter().sum::<i64>() as f64 / bearings.len() as f64;
+                            Some(bearing.round() as i64)
+                        }
+                    }
+                }
+            }
+            /// Extract the daily cloud cover.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `cloudCover`
+            /// * hourly `cloudCover`
+            fn cloud_cover(&self) -> Option<f64> {
+                match daily!(self).cloudCover {
+                    Some(cover) => Some(cover),
+                    None => {
+                        let covers = hourly_iter!(self).filter_map(|md| md.cloudCover).collect::<Vec<f64>>();
+                        if covers.is_empty() {
+                            log::trace!("cloud_cover has no value, using default.");
+                            None
+                        } else {
+                            let cover = covers.iter().sum::<f64>() / covers.len() as f64;
+                            Some((cover * 100.0).round() / 100.0)
+                        }
+                    }
+                }
+            }
+            /// Extract the daily atmospheric pressure.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `pressure`
+            /// * hourly `pressure`
+            fn pressure(&self) -> Option<f64> {
+                match daily!(self).pressure {
+                    Some(pressure) => Some(pressure),
+                    None => {
+                        let pressures = hourly_iter!(self).filter_map(|md| md.pressure).collect::<Vec<f64>>();
+                        if pressures.is_empty() {
+                            log::trace!("pressure has no value, using default.");
+                            None
+                        } else {
+                            let pressure = pressures.iter().sum::<f64>() / pressures.len() as f64;
+                            Some((pressure * 10000.0).round() / 10000.0)
+                        }
+                    }
+                }
+            }
+            /// Extract the daily atmospheric pressure.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `uvIndex`
+            /// * hourly `uvIndex`
+            fn uv_index(&self) -> Option<f64> {
+                match daily!(self).uvIndex {
+                    Some(uv_index) => Some(uv_index as f64),
+                    None => {
+                        let uv_indexes = hourly_iter!(self).filter_map(|md| md.uvIndex).collect::<Vec<i64>>();
+                        if uv_indexes.is_empty() {
+                            log::trace!("uv_index has no value, using default.");
+                            None
+                        } else {
+                            let uv_index = uv_indexes.iter().sum::<i64>() as f64 / uv_indexes.len() as f64;
+                            Some((uv_index * 100.0).round() / 100.0)
+                        }
+                    }
+                }
+            }
+            /// Extract the daily atmospheric pressure.
+            ///
+            /// *DarkSky* history is sparse so the following attributes are examined from first to last.
+            /// * daily `visibility`
+            /// * hourly `visibility`
+            fn visibility(&self) -> Option<f64> {
+                match daily!(self).visibility {
+                    Some(visibility) => Some(visibility),
+                    None => {
+                        let visibilities = hourly_iter!(self).filter_map(|md| md.visibility).collect::<Vec<f64>>();
+                        if visibilities.is_empty() {
+                            log::trace!("visibility has no value, using default.");
+                            None
+                        } else {
+                            let visibility = visibilities.iter().sum::<f64>() / visibilities.len() as f64;
+                            Some((visibility * 100.0).round() / 100.0)
+                        }
+                    }
+                }
+            }
+        }
+        #[derive(Debug, Serialize, Deserialize)]
+        /// The *DarkSky* hourly weather history data.
+        struct DarkskyHourly {
+            data: Vec<HourlyMd>,
+        }
+        #[allow(non_snake_case)]
+        #[derive(Debug, Serialize, Deserialize)]
+        /// The *DarkSky* hourly weather metadata.
+        struct HourlyMd {
+            apparentTemperature: Option<f64>,
+            cloudCover: Option<f64>,
+            dewPoint: Option<f64>,
+            humidity: Option<f64>,
+            icon: Option<String>,
+            precipIntensity: Option<f64>,
+            precipProbability: Option<f64>,
+            pressure: Option<f64>,
+            summary: Option<String>,
+            temperature: Option<f64>,
+            time: Option<i64>,
+            uvIndex: Option<i64>,
+            visibility: Option<f64>,
+            windBearing: Option<i64>,
+            windGust: Option<f64>,
+            windSpeed: Option<f64>,
+        }
+        #[derive(Debug, Serialize, Deserialize)]
+        /// The *DarkSky* dailty weather history data.
+        struct DarkskyDaily {
+            data: Vec<DailyMd>,
+        }
+        #[allow(non_snake_case)]
+        #[derive(Debug, Serialize, Deserialize)]
+        /// The *DarkSky* daily weather metadata.
+        struct DailyMd {
+            apparentTemperatureHigh: Option<f64>,
+            apparentTemperatureHighTime: Option<i64>,
+            apparentTemperatureLow: Option<f64>,
+            apparentTemperatureLowTime: Option<i64>,
+            apparentTemperatureMax: Option<f64>,
+            apparentTemperatureMaxTime: Option<i64>,
+            apparentTemperatureMin: Option<f64>,
+            apparentTemperatureMinTime: Option<i64>,
+            cloudCover: Option<f64>,
+            dewPoint: Option<f64>,
+            humidity: Option<f64>,
+            icon: Option<String>,
+            moonPhase: Option<f64>,
+            precipIntensity: Option<f64>,
+            precipIntensityMax: Option<f64>,
+            precipIntensityMaxTime: Option<f64>,
+            precipProbability: Option<f64>,
+            precipType: Option<String>,
+            pressure: Option<f64>,
+            summary: Option<String>,
+            sunriseTime: Option<i64>,
+            sunsetTime: Option<i64>,
+            temperatureHigh: Option<f64>,
+            temperatureHighTime: Option<i64>,
+            temperatureLow: Option<f64>,
+            temperatureLowTime: Option<i64>,
+            temperatureMax: Option<f64>,
+            temperatureMaxTime: Option<i64>,
+            temperatureMin: Option<f64>,
+            temperatureMinTime: Option<i64>,
+            time: Option<i64>,
+            uvIndex: Option<i64>,
+            uvIndexTime: Option<i64>,
+            visibility: Option<f64>,
+            windBearing: Option<i64>,
+            windGust: Option<f64>,
+            windGustTime: Option<i64>,
+            windSpeed: Option<f64>,
         }
     }
 }

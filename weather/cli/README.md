@@ -2,65 +2,66 @@
 
 ### The `main` program
 
-The CLI mainline is responsible for intialization of libraries and domain, parsing the command line, and executing the commands. It also will setup the logger to emit `INFO`, `DEBUG`, and `TRACE` level logging.
+The CLI mainline is responsible for getting the CLI implementation and parsing the command line arguments. Intialization of the runtime and execution of commands is now delegated to the `cli` module. It also will setup the logger to emit `INFO`, `DEBUG`, and `TRACE` level logging.
 
 ### The `cli` Module
 
-The CLI is built on top of the `clap` crate. All of the sub-commands support producing report output in the form of plain text, JSON, or CSV formatted text.
+The CLI is built on using the `clap` crate. In the previous version the commands were implemented using `#[derive(...)]` macros however I re-wrote the CLI using the program API. This allowed me to get rid of a lot of crap and facilitated separating arguments from implementation. I like the implementation patterns being used. For me reading the API implementing commands and arguments is a lot more consise than `#derive` on top of structures.
 
-Unlike `Python` this implementation only supports reporting weather data. It does not support adding either locations or weather data.
+ All of the sub-commands support producing report output in the form of plain text, `JSON`, or `CSV` formatted text.
 
 As with the `Python` implementation, the weather executable consists of subcommands to create various reports. If a subcommand is not entered a help overview is provided.
 
 ```
 $ weather
-The CLI commands available for weather data
+The weather data command line.
 
-Usage: weather [OPTIONS] [COMMAND]
+Usage: weather [OPTIONS] <COMMAND>
 
 Commands:
-  ll    Show weather data locations
-  ls    Show a summary of weather data available by location
-  lh    List weather data, by date, available by location
-  rh    Generate a weather data report for a location
+  ll    List the weather data locations that are available.
+  ls    List a summary of weather data available by location.
+  lh    List the dates of weather history available by location.
+  rh    Generate a weather history report for a location.
+  ah    Add weather history to a location.
   help  Print this message or the help of the given subcommand(s)
 
 Options:
-  -d, --dir <DATA_DIR>  The directory pathname containing weather data
-      --db              Use a database for weather data
-  -l, --log <LOG>       The filename logging output will be written into
-  -a, --append          Append to the log file, otherwise overwrite
-  -v...                 Logging verbosity level (once=INFO, twice=DEBUG, thrice=TRACE)
-  -h, --help            Print help (see more with '--help')
-  -V, --version         Print version
-  ```
+  -d, --directory <DIR>    The weather data directory pathname.
+      --db                 Use a database configuration for weather history.
+  -l, --logfile <LOGFILE>  The log filename (DEFAULT stdout).
+  -a, --append             Append to the logfile, otherwise overwrite.
+  -v, --verbose...         Logging verbosity (once=INFO, twice=DEBUG, +twice=TRACE)
+  -h, --help               Print help
+  -V, --version            Print version
+```
 
 Help for subcommands are also available.
 
 ```
-$ weather rh -h
-Generate a weather data report for a location
+$ weather rh
+Generate a weather history report for a location.
 
-Usage: weather rh [OPTIONS] <LOCATION> <START> [ENDS]
+Usage: weather rh [OPTIONS] <LOCATION> <FROM> [THRU]
 
 Arguments:
-  <LOCATION>  The location used for the details report
-  <START>     The starting date for the report
-  [ENDS]      The ending date for the report
+  <LOCATION>  The location to use for the weather history.
+  <FROM>      The weather history starting date.
+  [THRU]      The weather history ending date.
 
 Options:
-  -t, --temp           Include daily temperatures in the report (default)
-  -c, --cnd            Include daily conditions in the report
-  -m, --max            Include min/max temperatures in the report
-  -s, --sum            Include a summary of the weather in the report
-  -a, --all            Include all data in the generated report
-      --text           The output will be plain Text (default)
-      --csv            The output will be in CSV format
-      --json           The output will be in JSON format
-  -r, --report <FILE>  The name of a file report output will be written too
-  -A, --append         Append to the log file, otherwise overwrite
-  -p, --pretty         For JSON reports have content be more human readable
-  -h, --help           Print help (see more with '--help')
+  -t, --temp           Include temperature information in the report (default).
+  -p, --precip         Include percipitation information in the report.
+  -c, --cnd            Include weather conditions in the report.
+  -s, --sum            Include summary information in the report.
+  -a, --all            Include all weather information in the report.
+      --text           The report will be plain Text (default)
+      --csv            The report will be in CSV format.
+      --json           The report will be in JSON format.
+  -P, --pretty         For JSON reports output will be pretty printed.
+  -r, --report <FILE>  The report filename (default stdout).
+  -A, --append         Append to the report file, otherwise overwrite.
+  -h, --help           Print help
 ```
 
 Some of the command produce slightly different formatted output but it was something I had been wanting to do in `Python` for some time.
@@ -69,8 +70,6 @@ Some of the command produce slightly different formatted output but it was somet
 
 Here's what I liked about the command parser.
 
-* The `#derive` syntax was used to implement the sub-command parsing. It is one of the easiest API's I've used to manage complex command option relatsionships. If you take a look at the `rh` subcommand you will see a pretty complex set of flags and flag dependencies. I thought at one point I would need to do some post processing of arguments but `clap` `#derive` was able to manage it. Nice!
+* The `Command` API is really a nice implementation. The pattern of having a struct represent a collection of arguments is something I really like. It's trivial for the various commands to include report type arguments and access argument value that have been parsed.
 
-* It is easy to install custom parsers and custom validators for option arguments. Most command lines frameworks facilitate this but it was nicely intergrated.
-
-When I first created the CLI, `#derive` made sense to me. I'm thinking differently now after upgrading to the latest release. It was not fun trying to figure what broke in the derive attributes across the sub-commands. As I got up to speed with the newer changes in `clap` and fixed the derive issues I decided to use the programming API for the adminstration CLI. I think it was a good move.
+* It is easy to add custom parsers and validators for arguments. Most command line frameworks facilitate this but I particularly like how `clap` has implemented this. You can call a function that validates a directory argument and converts that to a `PathBuf`. When you access the argument can expect it to be a `PathBuf` not a string.

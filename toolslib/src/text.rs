@@ -96,6 +96,8 @@ pub enum Alignment {
     Center,
     /// Text will be right aligned.
     Right,
+    /// Text will be repeated to fill the column.
+    Span
 }
 
 /// The description of a column in a report
@@ -178,7 +180,7 @@ impl ReportData {
                     // truncate the rhs
                     &self.data[0..width]
                 }
-                Alignment::Center => {
+                Alignment::Center | &Alignment::Span => {
                     // truncate the lhs and rhs
                     let offset = (data_len - width) / 2;
                     &self.data[offset..offset + width]
@@ -194,6 +196,14 @@ impl ReportData {
             Alignment::Left => format!("{data:<width$}"),
             Alignment::Center => format!("{data:^width$}"),
             Alignment::Right => format!("{data:>width$}"),
+            Alignment::Span => {
+                if data_len == width {
+                    data.to_string()
+                } else {
+                    let repeat = (width / data_len) + 1;
+                    data.repeat(repeat)[0..width].to_string()
+                }
+            }
         }
     }
 }
@@ -349,7 +359,7 @@ fn format_header(cols: &Vec<ReportColumn>, headers: &Vec<ReportData>) -> String 
 /// 
 /// * `cols` is the collection of report column definitions.
 /// * `separator` is the separator string that will fill each of the report columns.
-fn format_separator(cols: &Vec<ReportColumn>, separator: &String) -> String {
+fn format_separator(cols: &Vec<ReportColumn>, separator: &str) -> String {
     let mut row_text = String::from("");
     let separator_len = separator.len();
     cols.iter().for_each(|report_column| {
@@ -466,6 +476,9 @@ mod tests {
         assert_eq!(testcase.fmt(&ReportColumn::new(Alignment::Center, 2, false)), "bc");
         assert_eq!(testcase.fmt(&ReportColumn::new(Alignment::Center, 4, false)), "abcd");
         assert_eq!(testcase.fmt(&ReportColumn::new(Alignment::Right, 3, true)), "cde");
+        assert_eq!(testcase.fmt(&ReportColumn::new(Alignment::Span, 3, true)), "bcd");
+        assert_eq!(testcase.fmt(&ReportColumn::new(Alignment::Span, 6, true)), "abcdea");
+        assert_eq!(testcase.fmt(&ReportColumn::new(Alignment::Span, 10, true)), "abcdeabcde");
     }
     #[test]
     fn format_text_fn() {
@@ -488,13 +501,13 @@ mod tests {
     #[test]
     fn format_separator_fn() {
         let column_formats = rptcols!(<+(1), <+(2), <+(5));
-        let testcase = format_separator(&column_formats, &String::from(""));
+        let testcase = format_separator(&column_formats, "");
         assert_eq!(testcase, String::default());
-        let testcase = format_separator(&column_formats, &String::from("-"));
+        let testcase = format_separator(&column_formats, "-");
         assert_eq!(testcase, String::from("- -- -----"));
-        let testcase = format_separator(&column_formats, &String::from("+-"));
+        let testcase = format_separator(&column_formats, "+-");
         assert_eq!(testcase, String::from("+ +- +-+-+"));
-        let testcase = format_separator(&column_formats, &String::from("+-="));
+        let testcase = format_separator(&column_formats, "+-=");
         assert_eq!(testcase, String::from("+ +- +-=+-"));
     }
     #[test]
@@ -581,6 +594,20 @@ mod macros {
                 rptrow!(@rd ($($data_markups)*) -> [
                     $($data_cells)*
                     $crate::text::ReportData::new("", None),
+                ])
+            };
+            // the span, comma delimited, markup overrides the columns alignment
+            (@rd ( + $data:expr, $($data_markups:tt)*) -> [$($data_cells:tt)*]) => {
+                rptrow!(@rd ($($data_markups)*) -> [
+                    $($data_cells)*
+                    $crate::text::ReportData::new($data, Some($crate::text::Alignment::Span)),
+                ])
+            };
+            // the span markup overrides the columns alignment, it ends markup parsing
+            (@rd ( + $data:expr ) -> [$($data_cells:tt)*]) => {
+                rptrow!(@rd () -> [
+                    $($data_cells)*
+                    $crate::text::ReportData::new($data, Some($crate::text::Alignment::Span)),
                 ])
             };
             // the left aligned, comma delimited, markup overrides the columns alignment
