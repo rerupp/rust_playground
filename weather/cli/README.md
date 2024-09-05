@@ -2,15 +2,57 @@
 
 ### The `main` program
 
-The CLI mainline is responsible for getting the CLI implementation and parsing the command line arguments. Intialization of the runtime and execution of commands is now delegated to the `cli` module. It also will setup the logger to emit `INFO`, `DEBUG`, and `TRACE` level logging.
+The `main` program is responsible for bootstrapping the CLI and passing control to it.
+The `main` program  has been changed to return `ExitStatus` since it best describes the
+termination of a program.
 
 ### The `cli` Module
 
-The CLI is built on using the `clap` crate. In the previous version the commands were implemented using `#[derive(...)]` macros however I re-wrote the CLI using the program API. This allowed me to get rid of a lot of crap and facilitated separating arguments from implementation. I like the implementation patterns being used. For me reading the API implementing commands and arguments is a lot more consise than `#derive` on top of structures.
+The CLI is built on top of the `clap` crate using their program API. Originally I used `#derive` 
+class attributes however it quickly got bloated and complex (read this as a lot of crap). I 
+really like the program centric implementation patterns `clap` encourages and to me feels much more 
+consise.
 
- All of the sub-commands support producing report output in the form of plain text, `JSON`, or `CSV` formatted text.
+Some differences from the last release is that `admin` commands have been moved into the CLI and 
+is no longer a standalone program. After moving to the `clap` program API, encorporating the  
+administration API into the main program made this pretty easy.
 
-As with the `Python` implementation, the weather executable consists of subcommands to create various reports. If a subcommand is not entered a help overview is provided.
+
+The bootstrap of the CLI continues to include setting up a logger. The verbosity of the logger  
+(`INFO`, `DEBUG`, or `TRACE`) can be changed via a command line argument. The default level is  
+`WARN`.
+
+Most of the commands support producing report output in the form of plain text, `JSON`, or `CSV` 
+formats. Command line arguments allow the reports to be saved to a file instead of being output  
+to `stdout`.
+
+#### The `cli::admin` module
+
+The `admin` module contains the administration CLI commands.
+
+#### The `cli::reports` module
+
+The `reports` module contains the various reports avaliable to the CLI commands. Previously this
+was buried in the command implementation but was moved due to the TUI addition.
+
+#### The `cli::tui` module
+
+The `tui` module contains the terminal based UI application. This was one of the big additions in 
+for the release. All of the non-admin commands have been incorporated into the TUI. The TUI is 
+built on top of [terminal UI](../termui/README.md) library.
+
+The TUI main window consists of a menu bar with tabbed windows showing the locations, summary, or 
+history reports. Only textual report output is available as of now. A weather data location can be 
+added along with adding historical weather data.
+
+#### The `cli::user` module
+
+The `user` module contains the non-administration CLI commands.
+
+### The `weather` application.
+
+The weather executable consists of various subcommands. If a subcommand is not entered, a help 
+overview is provided.
 
 ```
 $ weather
@@ -19,21 +61,24 @@ The weather data command line.
 Usage: weather [OPTIONS] <COMMAND>
 
 Commands:
-  ll    List the weather data locations that are available.
-  ls    List a summary of weather data available by location.
-  lh    List the dates of weather history available by location.
-  rh    Generate a weather history report for a location.
-  ah    Add weather history to a location.
-  help  Print this message or the help of the given subcommand(s)
+  ll     List the known weather data history locations_win.
+  lh     List the dates of weather history available by location.
+  ls     List a summary of weather data available by location.
+  rh     Generate a weather history report for a location.
+  ah     Add weather history to a location.
+  tui    A Terminal based weather data UI.
+  admin  The weather data administration tool.
+  help   Print this message or the help of the given subcommand(s)
 
 Options:
-  -d, --directory <DIR>    The weather data directory pathname.
-      --db                 Use a database configuration for weather history.
-  -l, --logfile <LOGFILE>  The log filename (DEFAULT stdout).
-  -a, --append             Append to the logfile, otherwise overwrite.
-  -v, --verbose...         Logging verbosity (once=INFO, twice=DEBUG, +twice=TRACE)
-  -h, --help               Print help
-  -V, --version            Print version
+  -c, --config <FILE>    The configuration file pathname (DEFAULT weather.toml).
+  -d, --directory <DIR>  The weather data directory pathname.
+      --fs               Do not use a weather history DB if one is available.
+  -l, --logfile <FILE>   The log filename (DEFAULT stdout).
+  -a, --append           Append to the logfile, otherwise overwrite.
+  -v, --verbose...       Logging verbosity (once=INFO, twice=DEBUG, +twice=TRACE)
+  -h, --help             Print help
+  -V, --version          Print version
 ```
 
 Help for subcommands are also available.
@@ -64,12 +109,43 @@ Options:
   -h, --help           Print help
 ```
 
-Some of the command produce slightly different formatted output but it was something I had been wanting to do in `Python` for some time.
+#### `admin` commands.
 
-#### `clap` Goodness
+Here is an overview of the administation commands.
 
-Here's what I liked about the command parser.
+```
+$ \weather admin
+The weather data administration tool.
 
-* The `Command` API is really a nice implementation. The pattern of having a struct represent a collection of arguments is something I really like. It's trivial for the various commands to include report type arguments and access argument value that have been parsed.
+Usage: weather admin <COMMAND>
 
-* It is easy to add custom parsers and validators for arguments. Most command line frameworks facilitate this but I particularly like how `clap` has implemented this. You can call a function that validates a directory argument and converts that to a `PathBuf`. When you access the argument can expect it to be a `PathBuf` not a string.
+Commands:
+  init      Initialize the weather data database.
+  drop      Delete the existing database schema.
+  migrate   Migrate DarkSky archives to internal weather history.
+  reload    Reload database weather history for locations.
+  show      Show information about the weather data backend components.
+  uscities  Administer the US Cities database.
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+```
+Help for subcommands is also available.
+
+```
+weather admin init -h
+Initialize the weather data database.
+
+Usage: weather admin init [OPTIONS]
+
+Options:
+      --hybrid             Configure the database to use archives for history data.
+      --document           Configure the database to use JSON for history data.
+      --compress           The JSON history data will be compressed in the database.
+      --normalized         Configure the database to be fully relational (default).
+      --threads <THREADS>  The number of threads to use [default: 8]
+      --drop               Drops the database before initializing.
+      --load               Load the database after initializing.
+  -h, --help               Print help
+```

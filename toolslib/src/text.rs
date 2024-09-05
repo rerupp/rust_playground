@@ -97,7 +97,7 @@ pub enum Alignment {
     /// Text will be right aligned.
     Right,
     /// Text will be repeated to fill the column.
-    Span
+    Span,
 }
 
 /// The description of a column in a report
@@ -112,9 +112,9 @@ pub struct ReportColumn {
 }
 impl ReportColumn {
     /// Creates a new instance of the report column.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `alignment` is the default alignment of text for the report column.
     /// * `width` is the initial width of the report column.
     /// * `fixed_width` indicates whether or not the report column is fixed width.
@@ -139,26 +139,26 @@ pub struct ReportData {
 }
 impl ReportData {
     /// Creates an instance of the report data.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `value` is the data that will be used for the [`Report`] column.
     /// * `alignment` is the desired alignment of the [`Report`] column.
     pub fn new<T: fmt::Display>(value: T, alignment: Option<Alignment>) -> Self {
         Self { data: value.to_string(), alignment, as_is: false }
     }
     /// Creates an instance of the report data with `alignment` set to None and `as_is` set to `true`.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `value` is the data that will be used for the [`Report`] column.
     pub fn as_is<T: fmt::Display>(value: T) -> Self {
         Self { data: value.to_string(), alignment: None, as_is: true }
     }
     /// Formats the report data using the report column defintion.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `report_column` is the associated report column definition.
     pub fn fmt(&self, report_column: &ReportColumn) -> String {
         let width = if self.as_is {
@@ -221,15 +221,15 @@ pub enum ReportRow {
 }
 impl ReportRow {
     /// Generates a row of text based on the collectioni of report columns.
-    /// 
+    ///
     /// For each `ReportRow` variant:
-    /// 
+    ///
     /// * [`Header`](ReportRow::Header) delegates row creation to the [`format_header`] function.
     /// * [`Separator`](ReportRow::Separator) delegates row creation to the [`format_separator`] function.
     /// * [`Text`](ReportRow::Text) delegates row creation to the [`format_text`] function.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `report_columns` contains the report column descriptions.
     fn generate(&self, report_columns: &Vec<ReportColumn>) -> String {
         match self {
@@ -250,14 +250,14 @@ pub struct Report {
 }
 impl From<Vec<ReportColumn>> for Report {
     fn from(rc: Vec<ReportColumn>) -> Self {
-        Self{ report_columns: rc, report_rows: vec![] }
+        Self { report_columns: rc, report_rows: vec![] }
     }
 }
 impl Report {
     /// Adds a header row to the report.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `header_row` is the collection report data that comprise the header row.
     pub fn header(&mut self, row: Vec<ReportData>) -> &mut Self {
         self.adjust_column_widths(&row);
@@ -265,18 +265,18 @@ impl Report {
         self
     }
     /// Adds a separator row to the report.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `separator` is the string used to create the separator row.
     pub fn separator(&mut self, separator: &str) -> &mut Self {
         self.report_rows.push(ReportRow::Separator(separator.to_string()));
         self
     }
     /// Adds a text row to the report.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `text_row` is the collection report data that comprise the rows content.
     pub fn text(&mut self, row: Vec<ReportData>) -> &mut Self {
         self.adjust_column_widths(&row);
@@ -284,9 +284,9 @@ impl Report {
         self
     }
     /// An internal function that adjusts the width of each report column description.
-    /// 
+    ///
     /// A columns width will not be adjusted if:
-    /// 
+    ///
     /// * the report data has been set [as is](ReportData::as_is).
     /// * the column description has been set to [fixed width](ReportColumn::fixed_width).
     fn adjust_column_widths(&mut self, report_data: &Vec<ReportData>) {
@@ -338,25 +338,25 @@ impl<'r> Iterator for ReportIterator<'r> {
 }
 
 /// Creates a line of header text using the collection of [`ReportColumn`] and collection of [`ReportData`].
-/// 
+///
 /// See [`format_text`] for details about how the header text will be formatted.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `cols` is the collection of column definitions describing the report header row.
-/// * `headers` is the collection of header text data used to populate the report row. 
+/// * `headers` is the collection of header text data used to populate the report row.
 fn format_header(cols: &Vec<ReportColumn>, headers: &Vec<ReportData>) -> String {
     format_text(cols, headers)
 }
 
 /// Create a line of text with each report column containing the separator.
-/// 
+///
 /// If the separator string length is less than the report column width, the
 /// separator string will be repeated until if fills the report columns width.
 /// If the column width is 0, the separator will not be added to the line of text.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `cols` is the collection of report column definitions.
 /// * `separator` is the separator string that will fill each of the report columns.
 fn format_separator(cols: &Vec<ReportColumn>, separator: &str) -> String {
@@ -384,15 +384,15 @@ fn format_separator(cols: &Vec<ReportColumn>, separator: &str) -> String {
 }
 
 /// Creates a line of text using the collection of [`ReportColumn`] and collection of [`ReportData`].
-/// 
-/// The collection of report column definitions can be larger than the collection of report data. 
+///
+/// The collection of report column definitions can be larger than the collection of report data.
 /// if there is more report data than report column defintions, the report data will be output as is
 /// separated by a space.
-/// 
+///
 /// # Arguments
-/// 
+///
 /// * `cols` is the collection of column definitions describing the report row.
-/// * `row` is the collection of text data used to populate the report row. 
+/// * `row` is the collection of text data used to populate the report row.
 fn format_text(cols: &Vec<ReportColumn>, row: &Vec<ReportData>) -> String {
     let col_formats_len = cols.len();
     let text_columns_len = row.len();
@@ -555,12 +555,61 @@ mod tests {
 }
 
 mod macros {
-    //! A collection of helper macros that facilitate the creation of a [`Report`].
-    //! 
-    //! Creating the collection of [`ReportColumn`] and [`ReportData`]can be verbose. The
-    //! [`rptcols`](super::rptcols) and [`rptrow`](super::rptrow) macros
+    //! A collection of helper macros that facilitate the creation of a [Report](super::Report).
+    //!
+    //! Creating a collection of [ReportColumn](super::ReportColumn) and [ReportData](super::ReportData)
+	//! can be verbose. The [rptcols](crate::rptcols) and [rptrow](crate::rptrow) macros
     //! ease this verbosity providing simple markup to generate the respective
     //! collections.
+
+    /// Creates and instance of [ReportData](struct@super::ReportData) that can
+    /// be added to a [Report](struct@super::Report) row.
+    ///
+    /// Simple markup facilitates the creation of `ReportData`. The following example shows
+    /// the markup and resulting `ReportData` collection.
+    ///
+    /// ```
+    /// # use toolslib::text::{Alignment, ReportData};
+    /// use toolslib::rptdata;
+    /// assert_eq!(rptdata!(_), ReportData::new("", None));
+    /// assert_eq!(rptdata!(+ "spanned"), ReportData::new("spanned", Some(Alignment::Span)));
+    /// assert_eq!(rptdata!("data"), ReportData::new("data", None));
+    /// assert_eq!(rptdata!(< "left"), ReportData::new("left", Some(Alignment::Left)));
+    /// assert_eq!(rptdata!(^ "center"), ReportData::new("center", Some(Alignment::Center)));
+    /// assert_eq!(rptdata!(> "right"), ReportData::new("right", Some(Alignment::Right)));
+    /// assert_eq!(rptdata!(= "as is"), ReportData::as_is("as is"));
+    /// ```
+    #[macro_export]
+    macro_rules! rptdata {
+        // Creates an empty report data column.
+        (_) => {
+            $crate::text::ReportData::new("", None)
+        };
+        // Create a spanned report data column.
+        (+ $data:expr) => {
+            $crate::text::ReportData::new($data, Some($crate::text::Alignment::Span))
+        };
+        // Create report data that will output as is.
+        (= $data:expr) => {
+            $crate::text::ReportData::as_is($data)
+        };
+        // Create left justified report data overriding the report column alignment.
+        (< $data:expr) => {
+            $crate::text::ReportData::new($data, Some($crate::text::Alignment::Left))
+        };
+        // Create center justified report data overriding the report column alignment.
+        (^ $data:expr) => {
+            $crate::text::ReportData::new($data, Some($crate::text::Alignment::Center))
+        };
+        // Create right justified report data overriding the report column alignment.
+        (> $data:expr) => {
+            $crate::text::ReportData::new($data, Some($crate::text::Alignment::Right))
+        };
+        // Create report data that uses the report column alignment.
+        ($data:expr) => {
+            $crate::text::ReportData::new($data, None)
+        };
+    }
 
     /// Generates a collection of [`ReportData`](struct@super::ReportData) that can
     /// be added to a [`Report`](struct@super::Report).
@@ -620,13 +669,13 @@ mod macros {
             // the left aligned markup overrides the columns alignment, it ends markup parsing
             (@rd ( = $data:expr ) -> [$($data_cells:tt)*]) => {
                 rptrow!(@rd () -> [
-               $($data_cells)*
+                    $($data_cells)*
                     $crate::text::ReportData::as_is($data),
                 ])
             };
             // the left aligned, comma delimited, markup overrides the columns alignment
             (@rd ( < $data:expr, $($data_markups:tt)*) -> [$($data_cells:tt)*]) => {
-           rptrow!(@rd ($($data_markups)*) -> [
+                rptrow!(@rd ($($data_markups)*) -> [
                     $($data_cells)*
                     $crate::text::ReportData::new($data, Some($crate::text::Alignment::Left)),
                 ])
@@ -696,7 +745,7 @@ mod macros {
     /// # use toolslib::text::{Alignment, ReportColumn};
     /// use toolslib::rptcols;
     /// assert_eq!(rptcols!(<, <+(1), <=(2), ^, ^+(3), ^=(4), >, >+(5), >=(6), =),
-    ///     vec![ 
+    ///     vec![
     ///         ReportColumn::new(Alignment::Left, 0, false),
     ///         ReportColumn::new(Alignment::Left, 1, false),
     ///         ReportColumn::new(Alignment::Left, 2, true),

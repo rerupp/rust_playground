@@ -10,6 +10,7 @@ pub mod fmt;
 pub mod logs;
 pub mod stopwatch;
 pub mod text;
+pub mod report;
 
 /// The tools library result.
 type Result<T> = result::Result<T, Error>;

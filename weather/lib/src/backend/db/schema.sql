@@ -36,11 +36,12 @@ CREATE TABLE if NOT EXISTS metadata
     store_size INTEGER,
     size INTEGER,
     mtime INTEGER,
-    FOREIGN KEY (lid) REFERENCES locations(id)
+    FOREIGN KEY (lid) REFERENCES locations(id),
+    CONSTRAINT uc_metadata_lid_date UNIQUE (lid, date)
 );
 
 -- cover the metadata location id with an index
-CREATE INDEX IF NOT EXISTS idx_dates_lid on metadata(lid);
+CREATE INDEX IF NOT EXISTS idx_metadata_lid on metadata(lid);
 
 -- cover the metadata dates with an index
 CREATE INDEX IF NOT EXISTS idx_metadata_date on metadata(date);
@@ -50,10 +51,9 @@ CREATE TABLE IF NOT EXISTS documents
 (
     id INTEGER PRIMARY KEY,
     mid INTEGER NOT NULL,
-    daily TEXT,
-    daily_zip BLOB,
-    -- the size of the uncompressed daily history
-    daily_size INTEGER,
+    plain TEXT,
+    zipped BLOB,
+    size INTEGER,
     FOREIGN KEY (mid) REFERENCES metadata(id)
 );
 

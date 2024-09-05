@@ -7,7 +7,7 @@ use thousands::Separable;
 
 /// Add commas to some numeric string value.
 ///
-/// This function is exposed to consolicate the `thousands` crate to this module
+/// This function is exposed to consolidate the `thousands` crate to this module
 /// and not spread it across the entire playground.
 ///
 /// # Arguments

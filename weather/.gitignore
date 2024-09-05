@@ -6,6 +6,7 @@
 weather_data
 weather.toml
 ,*
+*.err
 *.log
 *.lis
 *.txt

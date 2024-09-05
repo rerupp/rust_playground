@@ -53,12 +53,13 @@ pub fn fmt_date(date: &NaiveDate, format: &str) -> String {
 ///
 /// An error will be returned if the date parsing fails.
 pub fn parse_date(date_str: &str) -> Result<NaiveDate> {
-    for fmt in ["%Y-%m-%d", "%m-%d-%Y", "%b-%d-%Y"] {
+    for fmt in ["%Y-%m-%d", "%m-%d-%Y", "%b-%d-%Y", "%m/%d/%Y"] {
         if let Ok(naive_date) = NaiveDate::parse_from_str(date_str, fmt) {
             return Ok(naive_date);
         }
     }
-    Err(Error::from(format!("'{}' pattern must be 'YYYY-MM-DD', 'MM-DD-YYYY', or 'MMM-DD-YYYY'!!!", date_str)))
+    let patterns = "YYYY-MM-DD, MM-DD-YYYY, MM/DD/YYYY, or MMM-DD-YYYY";
+    Err(Error::from(format!("'{}' pattern must be {}.", date_str, patterns)))
 }
 
 /// A helper function that gets a timezone for a name of the timezone.
@@ -69,7 +70,7 @@ pub fn parse_date(date_str: &str) -> Result<NaiveDate> {
 pub fn get_tz(tz_name: &str) -> Result<Tz> {
     match tz_name.parse() {
         Ok(tz) => Ok(tz),
-        Err(error) => Err(Error::from(error)),
+        Err(error) => Err(Error::from(error.to_string())),
     }
 }
 

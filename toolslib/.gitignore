@@ -1,4 +1,9 @@
 /target
 /Cargo.lock
-/*.lis
-/*.log
+.vscode
+.idea
+*.code-workspace
+*.lis
+*.log
+*.lis
+,*

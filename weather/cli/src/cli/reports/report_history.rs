@@ -1,118 +1,191 @@
-//! # The implementation for report history (`rh`).
-//!
-//! The report history command presents historical weather data details.
-//! The details shown depend on what command line flags are supplied. By default
-//! the command will show the high and low temperatures for a date.
-//!
-//! Currently only 1 location can reported at a time however the command does
-//! support case-insensitive searching.
-//!
-use super::{ReportHistory, get_writer, Result};
+//! The weather data history reports.
+use super::*;
 use chrono::prelude::*;
-use weather_lib::prelude::{DailyHistories, DataCriteria, WeatherData};
-use std::io::Write;
+use chrono_tz::*;
+use weather_lib::prelude::DailyHistories;
 
-pub(in crate::cli) fn execute(weather_data: &WeatherData, cmd_args: ReportHistory) -> Result<()> {
-    let criteria = DataCriteria { filters: vec![cmd_args.location()], icase: true, sort: false };
-    let histories = weather_data.get_daily_history(criteria, cmd_args.date_range())?;
-    let report_args = cmd_args.report_args();
-    let mut writer = get_writer(&report_args)?;
-    if report_args.csv() {
-        csv_report::generate(histories, cmd_args, &mut writer)
-    } else if report_args.json() {
-        json_report::generate(histories, cmd_args, &mut writer)
-    } else {
-        text_report::generate(histories, cmd_args, &mut writer)
+/// The report content selection categories.
+#[derive(Debug, Default)]
+pub struct ReportSelector {
+    /// Include temperature related history data.
+    pub temperatures: bool,
+    /// Include precipitation related history data.
+    pub precipitation: bool,
+    /// Include the weather conditions related history data.
+    pub conditions: bool,
+    /// Include summary information for the history data.
+    pub summary: bool,
+}
+
+fn sanitize_report_selector(report_selector: &mut ReportSelector) {
+    if !(report_selector.precipitation || report_selector.conditions || report_selector.summary) {
+        // temperatures is the default
+        report_selector.temperatures = true;
     }
 }
 
-mod text_report {
-    /// The report history text based reporting implementation.
-    ///
-    /// This module utilizes the `text_reports` module to generate reports.
+pub mod text {
+    //! The report history text based reporting implementation.
+    //!
     use super::*;
-    use chrono_tz::*;
+    use std::fmt::Write;
     use toolslib::{
-        date_time::{get_tz_ts, isodate},
+        date_time::{fmt_date, get_tz_ts},
         fmt::fmt_float,
-        rptcols, rptrow,
-        text::{write_strings, Report},
     };
 
-    /// Generates the report history text based report.
-    ///
-    /// An error will be returned if there are issues writing the report.
-    ///
-    /// # Arguments
-    ///
-    /// * `daily_histories` is the locations weather history that will be reported.
-    /// * `args` are the report command arguments.
-    /// * `writer` is where report output will be sent.
-    ///
-    pub(super) fn generate(daily_histories: DailyHistories, args: ReportHistory, writer: &mut impl Write) -> Result<()> {
-        let mut columns = rptcols!(^);
-        let mut header1 = rptrow!(_,);
-        let mut header2 = rptrow!("Date");
-        if args.temps() {
-            columns.append(&mut rptcols!(^, ^, ^, ^));
-            header1.append(&mut rptrow!(+ "-", "Temperature", + "-", "Dew"));
-            header2.append(&mut rptrow!("High", "Low", "Mean", "Point"));
-        }
-        if args.precipitation() {
-            columns.append(&mut rptcols!(^, ^, ^, ^, ^));
-            header1.append(&mut rptrow!("Cloud", _, + "-", "Precipitation", + "-"));
-            header2.append(&mut rptrow!("Cover", "Humidity", "Chance", "Amount", "Type"));
-        }
-        if args.conditions() {
-            columns.append(&mut rptcols!(>, >, ^, ^, ^,));
-            header1.append(&mut rptrow!(+ "-", "Wind", + "-", _, "UV"));
-            header2.append(&mut rptrow!("Speed", "Gust", "Bearing", "Pressure", "Index"));
-        }
-        if args.summary() {
-            columns.append(&mut rptcols!(^, ^, ^, <,));
-            header1.append(&mut rptrow!(_, _, "Moon", _,));
-            header2.append(&mut rptrow!("Sunrise", "Sunset", "Phase", = "Summary"));
-        }
-        let mut report = Report::from(columns);
-        report.header(header1).header(header2).separator("-");
+    const DEFAULT_DATE_FORMAT: &'static str = "%Y-%m-%d";
 
-        let tz: Tz = daily_histories.location.tz.parse().unwrap();
-        for history in daily_histories.histories {
-            let mut row = rptrow!(isodate(&history.date));
-            if args.temps() {
-                let high = fmt_temperature(&history.temperature_high);
-                let low = fmt_temperature(&history.temperature_low);
-                let mean = fmt_temperature(&history.temperature_mean);
-                let dew_point = fmt_temperature(&history.dew_point);
-                row.append(&mut rptrow!(high, low, mean, dew_point));
-            }
-            if args.precipitation() {
-                let cloudy = fmt_percent(&history.cloud_cover);
-                let humidity = fmt_percent(&history.humidity);
-                let chance = fmt_percent(&history.precipitation_chance);
-                let amount = fmt_float(&history.precipitation_amount, 2);
-                let precip = history.precipitation_type.as_ref().map_or(Default::default(), |t| t.as_str());
-                row.append(&mut rptrow!(cloudy, humidity, chance, amount, precip))
-            }
-            if args.conditions() {
-                let wind = fmt_float(&history.wind_speed, 1);
-                let gust = fmt_float(&history.wind_gust, 1);
-                let bearing = fmt_wind_bearing(&history.wind_direction);
-                let uv = fmt_uv_index(&history.uv_index);
-                let pressure = fmt_float(&history.pressure, 1);
-                row.append(&mut rptrow!(wind, gust, bearing, pressure, uv));
-            }
-            if args.summary() {
-                let sunrise_t = fmt_hhmm(&history.sunrise, &tz);
-                let sunset_t = fmt_hhmm(&history.sunset, &tz);
-                let moon_p = fmt_moon_phase(&history.moon_phase);
-                let summary = history.description.as_ref().map_or(Default::default(), |s| s.as_str());
-                row.append(&mut rptrow!(sunrise_t, sunset_t, moon_p, = summary));
-            }
-            report.text(row);
+    /// The text based history report.
+    ///
+    #[derive(Debug)]
+    pub struct Report {
+        /// The report content selection.
+        report_selector: ReportSelector,
+        /// Add a separator between the headers and history data.
+        title_separator: bool,
+        /// Allow the dates to have a custom format
+        date_format: Option<String>,
+    }
+    impl Report {
+        /// Create a new instance of the text based history report.
+        ///
+        /// # Arguments
+        ///
+        /// - `report_selection` controls the contents of the report.
+        ///
+        pub fn new(mut report_selector: ReportSelector) -> Self {
+            sanitize_report_selector(&mut report_selector);
+            Self { report_selector, title_separator: false, date_format: None }
         }
-        write_strings(writer, report.into_iter())?;
-        Ok(())
+        /// Add a separator between header rows and report text rows.
+        ///
+        pub fn with_title_separator(mut self) -> Self {
+            self.title_separator = true;
+            self
+        }
+        /// Use a custom date format for report dates.
+        ///
+        /// # Arguments
+        ///
+        /// - `date_format` is the `chrono` date format string.
+        ///
+        pub fn with_date_format(mut self, date_format: &str) -> Self {
+            let date_format = date_format.to_string();
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+            // write will error if the format is bad
+            let mut formatted_epoch = String::new();
+            match write!(formatted_epoch, "{}", epoch.format(&date_format)) {
+                Ok(_) => {
+                    self.date_format.replace(date_format);
+                }
+                Err(_) => {
+                    // right now formats are all hard coded so it's a dev problem
+                    debug_assert!(false, "Bad date format '{}'!!!", date_format);
+                }
+            }
+            self
+        }
+        /// Generates the report history text based report.
+        ///
+        /// # Arguments
+        ///
+        /// * `daily_histories` is the locations_win weather history that will be reported.
+        ///
+        pub fn generate(&self, daily_histories: DailyHistories) -> ReportSheet {
+            let mut layouts = vec![layout!(^)];
+            macro_rules! layouts {
+                ($layouts:expr) => {
+                    layouts.append(&mut $layouts);
+                };
+            }
+            let mut header1 = vec![header!("")];
+            macro_rules! header1 {
+                ($columns:expr) => {
+                    header1.append(&mut $columns);
+                };
+            }
+            let mut header2 = vec![header!("Date")];
+            macro_rules! header2 {
+                ($columns:expr) => {
+                    header2.append(&mut $columns);
+                };
+            }
+            if self.report_selector.temperatures {
+                layouts!(vec![layout!(^), layout!(^), layout!(^), layout!(^)]);
+                header1!(vec![header!(+ "-"), header!("Temperature"), header!(+ "-"), header!("Dew")]);
+                header2!(vec![header!("High"), header!("Low"), header!("Mean"), header!("Point")]);
+            }
+            if self.report_selector.precipitation {
+                layouts!(vec![layout!(^), layout!(^), layout!(^), layout!(^), layout!(^)]);
+                header1!(vec![header!("Cloud"), header!(""), header!(+ "-"), header!("Precipitation"), header!(+ "-")]);
+                header2!(vec![
+                    header!("Cover"),
+                    header!("Humidity"),
+                    header!("Chance"),
+                    header!("Amount"),
+                    header!("Type")
+                ]);
+            }
+            if self.report_selector.conditions {
+                layouts!(vec![layout!(>), layout!(>), layout!(^), layout!(^), layout!(^)]);
+                header1!(vec![header!(+ "-"), header!("Wind"), header!(+ "-"), header!(""), header!("UV")]);
+                header2!(vec![
+                    header!("Speed"),
+                    header!("Gust"),
+                    header!("Bearing"),
+                    header!("Pressure"),
+                    header!("Index")
+                ]);
+            }
+            if self.report_selector.summary {
+                layouts!(vec![layout!(^), layout!(^), layout!(^), layout!(<)]);
+                header1!(vec![header!(""), header!(""), header!("Moon"), header!("")]);
+                header2!(vec![header!("Sunrise"), header!("Sunset"), header!("Phase"), header!("Summary")]);
+            }
+            let columns = layouts.len();
+            let mut report = ReportSheet::new(layouts);
+            report.add_row(header1);
+            report.add_row(header2);
+            if self.title_separator {
+                report.add_row(text_title_separator!(columns));
+            }
+            let tz: Tz = daily_histories.location.tz.parse().unwrap();
+            let date_format = self.date_format.as_ref().map_or(DEFAULT_DATE_FORMAT, |format| format.as_str());
+            for history in daily_histories.histories {
+                let mut row = Vec::with_capacity(columns);
+                row.push(text!(fmt_date(&history.date, date_format)));
+                if self.report_selector.temperatures {
+                    row.push(text!(fmt_temperature(&history.temperature_high)));
+                    row.push(text!(fmt_temperature(&history.temperature_low)));
+                    row.push(text!(fmt_temperature(&history.temperature_mean)));
+                    row.push(text!(fmt_temperature(&history.dew_point)));
+                }
+                if self.report_selector.precipitation {
+                    row.push(text!(fmt_percent(&history.cloud_cover)));
+                    row.push(text!(fmt_percent(&history.humidity)));
+                    row.push(text!(fmt_percent(&history.precipitation_chance)));
+                    row.push(text!(fmt_float(&history.precipitation_amount, 2)));
+                    row.push(text!(history.precipitation_type.as_ref().map_or(Default::default(), |t| t.as_str())));
+                }
+                if self.report_selector.conditions {
+                    row.push(text!(fmt_float(&history.wind_speed, 1)));
+                    row.push(text!(fmt_float(&history.wind_gust, 1)));
+                    row.push(text!(fmt_wind_bearing(&history.wind_direction)));
+                    row.push(text!(fmt_uv_index(&history.uv_index)));
+                    row.push(text!(fmt_float(&history.pressure, 1)));
+                }
+                // if self.summary {
+                if self.report_selector.summary {
+                    row.push(text!(fmt_hhmm(&history.sunrise, &tz)));
+                    row.push(text!(fmt_hhmm(&history.sunset, &tz)));
+                    row.push(text!(fmt_moon_phase(&history.moon_phase)));
+                    row.push(text!(history.description.as_ref().map_or(Default::default(), |s| s.as_str())));
+                }
+                report.add_row(row);
+            }
+            report
+        }
     }
 
     /// Returns a compass bearing as a human readable direction.
@@ -137,7 +210,7 @@ mod text_report {
     ///
     /// * `bearing_option` - the bearing that will be converter to a string.
     ///
-    pub fn fmt_wind_bearing(bearing_option: &Option<i64>) -> &'static str {
+    fn fmt_wind_bearing(bearing_option: &Option<i64>) -> &'static str {
         if let Some(bearing) = bearing_option {
             static BEARINGS: [&'static str; 16] =
                 ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
@@ -398,69 +471,92 @@ mod text_report {
     }
 }
 
-mod json_report {
+pub mod json {
     /// The report history JSON based reporting implementation.
     ///
-    /// This module utilizes the `serde_json` dependency to generate reports.
     use super::*;
-    use chrono_tz::*;
-    use serde_json::map::Map;
-    use serde_json::{json, to_string, to_string_pretty, Value};
     use toolslib::date_time::{get_tz_ts, isodate};
 
-    /// Generates the report history JSON based report.
+    /// The `JSON` based weather history report.
     ///
-    /// An error will be returned if there are issues writing the report.
-    ///
-    /// # Arguments
-    ///
-    /// * `daily_histories` is the locations weather history that will be reported.
-    /// * `args` are the report command arguments.
-    /// * `writer` is where report output will be sent.
-    ///
-    pub(super) fn generate(daily_histories: DailyHistories, args: ReportHistory, writer: &mut impl Write) -> Result<()> {
-        let mut values: Vec<Map<String, Value>> = vec![];
-        let tz: Tz = daily_histories.location.tz.parse().unwrap();
-        for history in daily_histories.histories {
-            let mut value = Map::new();
-            let mut add = |key: &str, v: Value| value.insert(key.to_string(), v);
-            add("date", json!(isodate(&history.date)));
-            if args.temps() {
-                add("temperatureHigh", float_value(&history.temperature_high));
-                add("temperatureLow", float_value(&history.temperature_low));
-                add("temperatureMean", float_value(&history.temperature_mean));
-                add("dewPoint", float_value(&history.dew_point));
-            }
-            if args.precipitation() {
-                add("cloudCover", float_value(&history.cloud_cover));
-                add("humidity", float_value(&history.humidity));
-                add("precip", float_value(&history.precipitation_amount));
-                add("precipChance", float_value(&history.precipitation_chance));
-                add("precipType", string_value(&history.precipitation_type));
-            }
-            if args.conditions() {
-                add("windSpeed", float_value(&history.wind_speed));
-                add("windGust", float_value(&history.wind_gust));
-                add("windBearing", int_value(&history.wind_direction));
-                add("uvIndex", float_value(&history.uv_index));
-                add("pressure", float_value(&history.pressure));
-            }
-            if args.summary() {
-                add("sunrise", datetime_value(&history.sunrise, &tz));
-                add("sunset", datetime_value(&history.sunset, &tz));
-                add("moonPhase", float_value(&history.moon_phase));
-                add("summary", string_value(&history.description));
-            }
-            values.push(value);
+    #[derive(Debug)]
+    pub struct Report {
+        /// Controls the content of the weather history report.
+        report_selector: ReportSelector,
+        /// Controls if the resulting document will be pretty printed of not.
+        pretty: bool,
+    }
+    impl Report {
+        /// Create a new instance of the `JSON` based weather history report.
+        ///
+        /// # Arguments
+        ///
+        /// - `report_selection` controls the contents of the report.
+        ///
+        pub fn new(mut report_selector: ReportSelector) -> Self {
+            sanitize_report_selector(&mut report_selector);
+            Self { report_selector, pretty: false }
         }
-        let root = json!({
-            "location": daily_histories.location.name,
-            "type": Value::String("daily_history".to_string()),
-            "history": json![values],
-        });
-        let as_text = if args.report_args().pretty() { to_string_pretty } else { to_string };
-        writeln!(writer, "{}", as_text(&root)?)?;
-        Ok(())
+        /// Create a new instance of the `JSON` based weather history report that produces pretty printed documents.
+        ///
+        /// # Arguments
+        ///
+        /// - `report_selection` controls the contents of the report.
+        ///
+        pub fn pretty_printed(mut report_selector: ReportSelector) -> Self {
+            sanitize_report_selector(&mut report_selector);
+            Self { report_selector, pretty: true }
+        }
+        /// Generates the report history JSON based report.
+        ///
+        /// An error will be returned if there are issues writing the report.
+        ///
+        /// # Arguments
+        ///
+        /// * `daily_histories` is the locations_win weather history that will be reported.
+        ///
+        pub fn generate(&self, daily_histories: DailyHistories) -> String {
+            let mut values: Vec<Map<String, Value>> = vec![];
+            let tz: Tz = daily_histories.location.tz.parse().unwrap();
+            for history in daily_histories.histories {
+                let mut value = Map::new();
+                let mut add = |key: &str, v: Value| value.insert(key.to_string(), v);
+                add("date", json!(isodate(&history.date)));
+                if self.report_selector.temperatures {
+                    add("temperatureHigh", float_value(&history.temperature_high));
+                    add("temperatureLow", float_value(&history.temperature_low));
+                    add("temperatureMean", float_value(&history.temperature_mean));
+                    add("dewPoint", float_value(&history.dew_point));
+                }
+                if self.report_selector.precipitation {
+                    add("cloudCover", float_value(&history.cloud_cover));
+                    add("humidity", float_value(&history.humidity));
+                    add("precip", float_value(&history.precipitation_amount));
+                    add("precipChance", float_value(&history.precipitation_chance));
+                    add("precipType", string_value(&history.precipitation_type));
+                }
+                if self.report_selector.conditions {
+                    add("windSpeed", float_value(&history.wind_speed));
+                    add("windGust", float_value(&history.wind_gust));
+                    add("windBearing", int_value(&history.wind_direction));
+                    add("uvIndex", float_value(&history.uv_index));
+                    add("pressure", float_value(&history.pressure));
+                }
+                if self.report_selector.summary {
+                    add("sunrise", datetime_value(&history.sunrise, &tz));
+                    add("sunset", datetime_value(&history.sunset, &tz));
+                    add("moonPhase", float_value(&history.moon_phase));
+                    add("summary", string_value(&history.description));
+                }
+                values.push(value);
+            }
+            let json = json!({
+                "location": daily_histories.location.name,
+                "type": Value::String("daily_history".to_string()),
+                "history": json![values],
+            });
+            json_to_string(json, self.pretty)
+        }
     }
 
     /// Returns a `Value::String(...) ` containing an IETF RFC3339 date timestamp.
@@ -502,7 +598,7 @@ mod json_report {
     ///
     /// # Arguments
     ///
-    /// * `option` - the string that will encoded as a value.
+    /// * `option` - the string that will be encoded as a value.
     ///
     #[inline]
     fn string_value(option: &Option<String>) -> Value {
@@ -518,7 +614,7 @@ mod json_report {
     ///
     /// # Arguments
     ///
-    /// * `option` - the integer that will encoded as a value.
+    /// * `option` - the integer that will be encoded as a value.
     ///
     #[inline]
     fn int_value(option: &Option<i64>) -> Value {
@@ -534,7 +630,7 @@ mod json_report {
     ///
     /// # Arguments
     ///
-    /// * `option` - the float that will encoded as a value.
+    /// * `option` - the float that will be encoded as a value.
     ///
     #[inline]
     fn float_value(option: &Option<f64>) -> Value {
@@ -574,88 +670,102 @@ mod json_report {
     }
 }
 
-mod csv_report {
+pub mod csv {
     /// The report history CSV based reporting implementation.
     ///
-    /// This module utilizes the `csv` dependency to generate reports.
     use super::*;
-    use chrono::NaiveDateTime;
-    use chrono_tz::*;
-    use csv::Writer;
+    use crate::cli::reports::csv_to_string;
     use toolslib::date_time::{get_tz_ts, isodate};
 
-    /// Generates the list history CSV based report.
+    /// The `CSV` based weather history report.
     ///
-    /// An error will be returned if there are issues writing the report.
-    ///
-    /// # Arguments
-    ///
-    /// * `daily_histories` is the locations weather history that will be reported.
-    /// * `args` are the report command arguments.
-    /// * `writer` is where report output will be sent.
-    ///
-    pub(super) fn generate(daily_histories: DailyHistories, args: ReportHistory, writer: &mut impl Write) -> Result<()> {
-        let mut writer = Writer::from_writer(writer);
-        let mut labels: Vec<&str> = vec!["date"];
-        if args.temps() {
-            labels.push("temperatureHigh");
-            labels.push("temperatureLow");
-            labels.push("temperatureMean");
-            labels.push("dewPoint");
+    #[derive(Debug)]
+    pub struct Report(
+        /// Controls the contents of the weather history report.
+        ReportSelector
+    );
+    impl Report {
+        /// Create a new instance of the `CSV` based weather history report.
+        ///
+        /// # Arguments
+        ///
+        /// - `report_selection` controls the contents of the report.
+        ///
+        pub fn new(mut report_selector: ReportSelector) -> Self {
+            sanitize_report_selector(&mut report_selector);
+            Self(report_selector)
         }
-        if args.precipitation() {
-            labels.push("cloudCover");
-            labels.push("humidity");
-            labels.push("precip");
-            labels.push("precipChance");
-            labels.push("precipType");
-        }
-        if args.conditions() {
-            labels.push("windSpeed");
-            labels.push("windGust");
-            labels.push("windBearing");
-            labels.push("uvIndex");
-            labels.push("pressure");
-        }
-        if args.summary() {
-            labels.push("sunrise");
-            labels.push("sunset");
-            labels.push("moonPhase");
-            labels.push("summary");
-        }
-        writer.write_record(&labels)?;
-        let tz: Tz = daily_histories.location.tz.parse().unwrap();
-        for daily_history in daily_histories.histories {
-            let mut history = vec![isodate(&daily_history.date)];
-            if args.temps() {
-                history.push(float_value(&daily_history.temperature_high));
-                history.push(float_value(&daily_history.temperature_low));
-                history.push(float_value(&daily_history.temperature_mean));
-                history.push(float_value(&daily_history.dew_point));
+        /// Generates the list history CSV based report.
+        ///
+        /// An error will be returned if there are issues writing the report.
+        ///
+        /// # Arguments
+        ///
+        /// * `daily_histories` is the locations_win weather history that will be reported.
+        ///
+        pub fn generate(&self, daily_histories: DailyHistories) -> String {
+            let mut writer = csv_lib::Writer::from_writer(vec![]);
+            let mut labels: Vec<&str> = vec!["date"];
+            if self.0.temperatures {
+                labels.push("temperatureHigh");
+                labels.push("temperatureLow");
+                labels.push("temperatureMean");
+                labels.push("dewPoint");
             }
-            if args.precipitation() {
-                history.push(float_value(&daily_history.cloud_cover));
-                history.push(float_value(&daily_history.humidity));
-                history.push(float_value(&daily_history.precipitation_amount));
-                history.push(float_value(&daily_history.precipitation_chance));
-                history.push(string_value(&daily_history.precipitation_type));
+            if self.0.precipitation {
+                labels.push("cloudCover");
+                labels.push("humidity");
+                labels.push("precip");
+                labels.push("precipChance");
+                labels.push("precipType");
             }
-            if args.conditions() {
-                history.push(float_value(&daily_history.wind_speed));
-                history.push(float_value(&daily_history.wind_gust));
-                history.push(int_value(&daily_history.wind_direction));
-                history.push(float_value(&daily_history.uv_index));
-                history.push(float_value(&daily_history.pressure));
+            if self.0.conditions {
+                labels.push("windSpeed");
+                labels.push("windGust");
+                labels.push("windBearing");
+                labels.push("uvIndex");
+                labels.push("pressure");
             }
-            if args.summary() {
-                history.push(datetime_value(&daily_history.sunrise, &tz));
-                history.push(datetime_value(&daily_history.sunset, &tz));
-                history.push(float_value(&daily_history.moon_phase));
-                history.push(string_value(&daily_history.description));
+            if self.0.summary {
+                labels.push("sunrise");
+                labels.push("sunset");
+                labels.push("moonPhase");
+                labels.push("summary");
             }
-            writer.write_record(&history)?;
+            csv_write_record!(writer, &labels);
+            let tz: Tz = daily_histories.location.tz.parse().unwrap();
+            for daily_history in daily_histories.histories {
+                let mut history = vec![isodate(&daily_history.date)];
+                if self.0.temperatures {
+                    history.push(float_value(&daily_history.temperature_high));
+                    history.push(float_value(&daily_history.temperature_low));
+                    history.push(float_value(&daily_history.temperature_mean));
+                    history.push(float_value(&daily_history.dew_point));
+                }
+                if self.0.precipitation {
+                    history.push(float_value(&daily_history.cloud_cover));
+                    history.push(float_value(&daily_history.humidity));
+                    history.push(float_value(&daily_history.precipitation_amount));
+                    history.push(float_value(&daily_history.precipitation_chance));
+                    history.push(string_value(&daily_history.precipitation_type));
+                }
+                if self.0.conditions {
+                    history.push(float_value(&daily_history.wind_speed));
+                    history.push(float_value(&daily_history.wind_gust));
+                    history.push(int_value(&daily_history.wind_direction));
+                    history.push(float_value(&daily_history.uv_index));
+                    history.push(float_value(&daily_history.pressure));
+                }
+                if self.0.summary {
+                    history.push(datetime_value(&daily_history.sunrise, &tz));
+                    history.push(datetime_value(&daily_history.sunset, &tz));
+                    history.push(float_value(&daily_history.moon_phase));
+                    history.push(string_value(&daily_history.description));
+                }
+                csv_write_record!(writer, &history);
+            }
+            csv_to_string(writer)
         }
-        Ok(())
     }
 
     /// Returns an IETF RFC3339 date timestamp string.

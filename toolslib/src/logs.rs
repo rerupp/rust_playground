@@ -32,7 +32,7 @@ impl From<ConfigErrors> for LogError {
     }
 }
 
-/// Cosolidate the `log4rs` error when adding a logger to a log error.
+/// Consolidate the `log4rs` error when adding a logger to a log error.
 impl From<log::SetLoggerError> for LogError {
     fn from(error: log::SetLoggerError) -> Self {
         LogError(format!("{error}"))
@@ -47,10 +47,16 @@ impl From<io::Error> for LogError {
 }
 
 /// The default appender pattern used by the console loggers.
+#[cfg(not(debug_assertions))]
 const DEFAULT_CONSOLE_PATTERN: &str = "{l:<5} {M} {m}{n}";
+#[cfg(debug_assertions)]
+const DEFAULT_CONSOLE_PATTERN: &str = "{l:<5} {f}:{L} {m}{n}";
 
 /// The default appender pattern used by the file loggers.
-const DEFAULT_FILE_PATTERN: &str = "{d(%H:%M:%S%.3f)} {l:<5} {M} {m}{n}";
+#[cfg(not(debug_assertions))]
+const DEFAULT_FILE_PATTERN: &str = "{d(%H:%M:%S%.3f)}|{l:<5}|{M} {m}{n}";
+#[cfg(debug_assertions)]
+const DEFAULT_FILE_PATTERN: &str = "{d(%H:%M:%S%.3f)}|{l:<5}|{f}:{L} {m}{n}";
 
 /// The structure used to initialize `log4rs`.
 pub struct LogProperties {
