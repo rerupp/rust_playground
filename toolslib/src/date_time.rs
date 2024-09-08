@@ -221,10 +221,10 @@ mod test {
     }
     #[test]
     fn wtf() {
-        // Here's some chrono samples that can verify the implemenation.
+        // Here's some chrono samples that can verify the implementation.
 
         // Naive* defaults reflect the Unux epoch
-        assert_eq!(NaiveDateTime::default().timestamp(), 0);
+        assert_eq!(NaiveDateTime::default().and_utc().timestamp(), 0);
         assert_eq!(NaiveDateTime::default().to_string(), "1970-01-01 00:00:00");
         assert_eq!(NaiveDate::default(), NaiveDate::from_ymd_opt(1970, 1, 1).unwrap());
         assert_eq!(NaiveTime::default(), NaiveTime::from_hms_opt(0, 0, 0).unwrap());
@@ -270,13 +270,13 @@ mod test {
         assert_eq!(pt.format(fmt).to_string(), "2023-05-05 05:00:00 -0700");
 
         // timestamps all reflect the epoch seconds
-        assert_eq!(ndt.timestamp(), utc.timestamp());
+        assert_eq!(ndt.and_utc().timestamp(), utc.timestamp());
         assert_eq!(utc.timestamp(), localtime.timestamp());
         assert_eq!(utc.timestamp(), mt.timestamp());
         assert_eq!(utc.timestamp(), pt.timestamp());
 
         // timestamps can be used to create a date time for a particular timezone
-        let ts = ndt.timestamp();
+        let ts = ndt.and_utc().timestamp();
         assert_eq!(get_local_ts(ts), localtime);
         assert_eq!(get_tz_ts(ts, &mt_tz), mt);
         assert_eq!(get_tz_ts(ts, &pt_tz), pt);

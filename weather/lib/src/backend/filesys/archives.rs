@@ -407,7 +407,8 @@ mod v2 {
                     let second = datetime.second() as u32;
                     if let Some(time) = NaiveTime::from_hms_opt(hour, minute, second) {
                         let datetime = NaiveDateTime::new(date, time);
-                        datetime.timestamp_millis()
+                        // todo: can you ditch the whole NaiveDateTime gambit?
+                        datetime.and_utc().timestamp_millis()
                     } else {
                         let reason = format!("NaiveTime error for HHMMSS ({:02}{:02}{:02})", hour, minute, second);
                         log::error!("{}", &archive_err!(alias, reason));

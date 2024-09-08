@@ -266,7 +266,7 @@ pub mod text {
     ///
     #[inline]
     fn fmt_hhmm(date_time: &Option<NaiveDateTime>, tz: &Tz) -> String {
-        date_time.map_or(Default::default(), |dt| get_tz_ts(dt.timestamp(), tz).format("%H:%M").to_string())
+        date_time.map_or(Default::default(), |dt| get_tz_ts(dt.and_utc().timestamp(), tz).format("%H:%M").to_string())
     }
 
     /// Returns a UV index as a human readable string.
@@ -584,7 +584,7 @@ pub mod json {
         match option {
             Some(date_time) => {
                 // let dt: DateTime<Tz> = tz.timestamp(*timestamp, 0);
-                let dt: DateTime<Tz> = get_tz_ts(date_time.timestamp(), tz);
+                let dt: DateTime<Tz> = get_tz_ts(date_time.and_utc().timestamp(), tz);
                 let iso8601 = dt.to_rfc3339_opts(SecondsFormat::Secs, true);
                 json!(iso8601)
             }
@@ -682,7 +682,7 @@ pub mod csv {
     #[derive(Debug)]
     pub struct Report(
         /// Controls the contents of the weather history report.
-        ReportSelector
+        ReportSelector,
     );
     impl Report {
         /// Create a new instance of the `CSV` based weather history report.
@@ -793,7 +793,7 @@ pub mod csv {
         match option {
             Some(date_time) => {
                 // let dt: DateTime<Tz> = tz.timestamp(*timestamp, 0);
-                let dt: DateTime<Tz> = get_tz_ts(date_time.timestamp(), tz);
+                let dt: DateTime<Tz> = get_tz_ts(date_time.and_utc().timestamp(), tz);
                 dt.to_rfc3339_opts(SecondsFormat::Secs, true)
             }
             None => "".to_string(),

@@ -7,7 +7,7 @@ mod converters {
     //! Convert [History] to and from a `JSON` byte stream.
     //!
     use super::*;
-    use chrono::{NaiveDate, NaiveDateTime};
+    use chrono::{DateTime, NaiveDate};
     use serde::{Deserialize, Serialize};
 
     /// This is the structure used to serialize and deserialize [History].
@@ -78,8 +78,14 @@ mod converters {
                 cloud_cover: self.cloud,
                 pressure: self.pressure,
                 uv_index: self.uv,
-                sunrise: self.sunrise.map_or(None, |ts| NaiveDateTime::from_timestamp_opt(ts, 0)),
-                sunset: self.sunset.map_or(None, |ts| NaiveDateTime::from_timestamp_opt(ts, 0)),
+                sunrise: self
+                    .sunrise
+                    .map_or(None, |ts| DateTime::from_timestamp(ts, 0))
+                    .map_or(None, |dt| Some(dt.naive_utc())),
+                sunset: self
+                    .sunset
+                    .map_or(None, |ts| DateTime::from_timestamp(ts, 0))
+                    .map_or(None, |dt| Some(dt.naive_utc())),
                 moon_phase: self.moon,
                 visibility: self.vis,
                 description: self.summary,
@@ -91,8 +97,14 @@ mod converters {
         fn from(history: &History) -> Self {
             Self {
                 date: history.date,
-                sunrise: history.sunrise.map_or(None, |ts| Some(ts.timestamp())),
-                sunset: history.sunset.map_or(None, |ts| Some(ts.timestamp())),
+                sunrise: history
+                    .sunrise
+                    .map_or(None, |ndt| Some(ndt.and_utc()))
+                    .map_or(None, |dt| Some(dt.timestamp())),
+                sunset: history
+                    .sunset
+                    .map_or(None, |ndt| Some(ndt.and_utc()))
+                    .map_or(None, |dt| Some(dt.timestamp())),
                 moon: history.moon_phase,
                 tempmax: history.temperature_high,
                 tempmin: history.temperature_low,
@@ -157,6 +169,7 @@ mod converters {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use chrono::NaiveDateTime;
         use toolslib::date_time::{get_date, get_time};
 
         #[test]

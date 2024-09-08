@@ -9,7 +9,7 @@ mod v2 {
         admin::admin_entities::{FilesysDetails, LocationDetails},
         entities::{DataCriteria, History, Location},
     };
-    use chrono::{NaiveDate, NaiveDateTime};
+    use chrono::{DateTime, NaiveDate};
     use std::{
         env, fs,
         io::Read,
@@ -19,10 +19,10 @@ mod v2 {
 
     /// The common error builder
     macro_rules! error {
-    ($reason:expr) => {
-        Err(Error::from($reason))
-    };
-}
+        ($reason:expr) => {
+            Err(Error::from($reason))
+        };
+    }
 
     pub fn filesys_details(weather_dir: &WeatherDir) -> Result<FilesysDetails> {
         let locations = weather_locations(weather_dir)?;
@@ -257,28 +257,28 @@ mod v2 {
         }
         /// Returns a reference to the daily weather history.
         macro_rules! daily {
-        ($self:expr) => {
-            &$self.daily.data[0]
-        };
-    }
+            ($self:expr) => {
+                &$self.daily.data[0]
+            };
+        }
         /// Returns an iterator to the hourly weather history.
         macro_rules! hourly_iter {
-        ($self:expr) => {
-            $self.hourly.data.iter()
-        };
-    }
+            ($self:expr) => {
+                $self.hourly.data.iter()
+            };
+        }
         /// Consolidate what happens if weather history cannot be derived.
         macro_rules! map_or_default {
-        ($option:expr, $what:literal) => {
-            match $option {
-                Some(value) => Some(value),
-                None => {
-                    log::trace!("{} has no value, using default.", $what);
-                    None
+            ($option:expr, $what:literal) => {
+                match $option {
+                    Some(value) => Some(value),
+                    None => {
+                        log::trace!("{} has no value, using default.", $what);
+                        None
+                    }
                 }
-            }
-        };
-    }
+            };
+        }
         impl DarkskyHistory {
             /// Convert *DarkSky* weather history into [History].
             ///
@@ -305,8 +305,12 @@ mod v2 {
                     cloud_cover: self.cloud_cover(),
                     pressure: self.pressure(),
                     uv_index: self.uv_index(),
-                    sunrise: daily.sunriseTime.map_or(None, |ts| NaiveDateTime::from_timestamp_opt(ts, 0)),
-                    sunset: daily.sunsetTime.map_or(None, |ts| NaiveDateTime::from_timestamp_opt(ts, 0)),
+                    sunrise: daily
+                        .sunriseTime
+                        .map_or(None, |ts| DateTime::from_timestamp(ts, 0).map_or(None, |dt| Some(dt.naive_utc()))),
+                    sunset: daily
+                        .sunsetTime
+                        .map_or(None, |ts| DateTime::from_timestamp(ts, 0).map_or(None, |dt| Some(dt.naive_utc()))),
                     moon_phase: daily.moonPhase,
                     visibility: self.visibility(),
                     description: daily.summary.clone(),
@@ -416,12 +420,12 @@ mod v2 {
                 match daily!(self).precipProbability {
                     Some(chance) => Some(chance),
                     None => {
-                        let probablities: Vec<f64> = hourly_iter!(self).filter_map(|h| h.precipProbability).collect();
-                        if probablities.is_empty() {
+                        let probabilities: Vec<f64> = hourly_iter!(self).filter_map(|h| h.precipProbability).collect();
+                        if probabilities.is_empty() {
                             log::trace!("probabilities has no value, using default.");
                             None
                         } else {
-                            let chance = probablities.iter().sum::<f64>() / probablities.len() as f64;
+                            let chance = probabilities.iter().sum::<f64>() / probabilities.len() as f64;
                             Some((chance * 100.0).round() / 100.0)
                         }
                     }

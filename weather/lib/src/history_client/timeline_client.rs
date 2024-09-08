@@ -1,6 +1,6 @@
 //! The Visual Crossing weather data services client.
 use super::*;
-use chrono::NaiveDateTime;
+use chrono::DateTime;
 use entities::History;
 use serde::Deserialize;
 
@@ -208,6 +208,7 @@ mod timeline_client {
 use timeline_response::TimelineDays;
 mod timeline_response {
     //! The Visual Crossing timeline response.
+
     use super::*;
 
     /// Defines the fields of interest from the Visual Crossing weather data response.
@@ -281,8 +282,14 @@ mod timeline_response {
                 cloud_cover: self.cloudcover.map_or(Default::default(), |c| Some(c / 100.0)),
                 pressure: self.pressure,
                 uv_index: self.uvindex,
-                sunrise: self.sunriseEpoch.map_or(Default::default(), |ts| NaiveDateTime::from_timestamp_opt(ts, 0)),
-                sunset: self.sunsetEpoch.map_or(Default::default(), |ts| NaiveDateTime::from_timestamp_opt(ts, 0)),
+                sunrise: self
+                    .sunriseEpoch
+                    .map_or(None, |ts| DateTime::from_timestamp(ts, 0))
+                    .map_or(None, |dt| Some(dt.naive_utc())),
+                sunset: self
+                    .sunsetEpoch
+                    .map_or(None, |ts| DateTime::from_timestamp(ts, 0))
+                    .map_or(None, |dt| Some(dt.naive_utc())),
                 moon_phase: self.moonphase,
                 visibility: self.visibility,
                 description: self.description,
@@ -329,7 +336,7 @@ mod timeline_response {
 
         #[test]
         fn daily_histories() {
-            let response = include_str!("response.txt");
+            let response = include_str!("response.json");
             let location = Location {
                 name: "name".to_string(),
                 alias: "alias".to_string(),
