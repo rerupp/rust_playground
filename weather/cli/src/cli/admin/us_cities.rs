@@ -1,17 +1,19 @@
 //! The US Cities administration command.
-use super::*;
-use weather_lib::admin_prelude::*;
+use crate::cli::Result;
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use std::path::PathBuf;
 use toolslib::{
     rptcols, rptrow,
     text::{self, Report},
 };
+use weather_lib::admin_prelude::{UsCitiesInfo, WeatherAdmin};
 
-pub(super) use v3::UsCitiesCmd;
+pub(in crate::cli::admin) use v3::UsCitiesCmd;
 
 mod v3 {
     //! The current version of the search US Cities command.
-    use crate::cli::current::parse_filename;
     use super::*;
+    use crate::cli::current::parse_filename;
 
     #[derive(Debug)]
     pub struct UsCitiesCmd(
@@ -69,7 +71,7 @@ mod v3 {
                 admin_api.uscities_load(path)?;
             }
             if cmd_args.info() || (cmd_args.filename().is_none() && !cmd_args.delete()) {
-                let uscities_info = admin_api.uncities_info()?;
+                let uscities_info = admin_api.uscities_info()?;
                 Self::report_info(uscities_info)?;
             }
             Ok(())

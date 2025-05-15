@@ -1,12 +1,11 @@
 //! Isolates the administration API from the weather API.
-use super::*;
-
+use super::{weather_locations, ArchiveMd, Error, Result, WeatherArchive, WeatherDir, WeatherFile};
 pub(crate) use v2::{filesys_details, migrate_history, MigrateConfig};
 mod v2 {
     //! The current implementation of administration for the file system.
     use super::*;
     use crate::{
-        admin::admin_entities::{FilesysDetails, LocationDetails},
+        admin::entities::{FilesysDetails, LocationDetails},
         entities::{DataCriteria, History, Location},
     };
     use chrono::{DateTime, NaiveDate};

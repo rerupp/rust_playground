@@ -2,7 +2,7 @@
 use super::*;
 
 pub(super) const TABLE_NAME: &str = "metadata";
-pub(super) use v3::{insert, row_size, delete, examine_add_histories};
+pub(super) use v3::{insert, delete, examine_add_histories};
 mod v3 {
     //! The current version of weather data history metadata.
     use super::*;
@@ -34,12 +34,6 @@ mod v3 {
             ":mtime": 0
         })?;
         Ok(tx.last_insert_rowid())
-    }
-
-    /// Get the size of a row in the metadata table.
-    pub fn row_size() -> usize {
-        // for the current table this is the best guess size
-        30
     }
 
     /// Remove all metadata associated with the location id.

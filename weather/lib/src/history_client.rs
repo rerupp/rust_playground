@@ -33,7 +33,7 @@ pub fn get(config: &Config) -> Result<Box<dyn HistoryClient>> {
 
 /// The internal API used to get location weather history.
 ///
-pub trait HistoryClient: Debug {
+pub trait HistoryClient: Debug + Send {
     /// Execute the request to get history for a location.
     ///
     /// # Arguments

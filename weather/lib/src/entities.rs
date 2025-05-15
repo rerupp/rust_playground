@@ -159,9 +159,9 @@ impl DateRanges {
 #[derive(Debug)]
 pub struct DateRange {
     /// The starting date of the range.
-    pub from: NaiveDate,
+    pub start: NaiveDate,
     /// The inclusive end date of the range.
-    pub to: NaiveDate,
+    pub end: NaiveDate,
 }
 impl DateRange {
     /// Create a new instance of the date range.
@@ -170,12 +170,12 @@ impl DateRange {
     ///
     /// * `from` is the starting date.
     /// * `thru` is the inclusive end date.
-    pub fn new(from: NaiveDate, thru: NaiveDate) -> DateRange {
-        DateRange { from, to: thru }
+    pub fn new(start: NaiveDate, end: NaiveDate) -> DateRange {
+        DateRange { start, end }
     }
     /// Returns `true` if the *from* and *to* dates are equal.
     pub fn is_one_day(&self) -> bool {
-        &self.from == &self.to
+        &self.start == &self.end
     }
     /// Identifies if a date is within the date range.
     ///
@@ -183,16 +183,16 @@ impl DateRange {
     ///
     /// * `date` is the date that will be checked.
     pub fn covers(&self, date: &NaiveDate) -> bool {
-        date >= &self.from && date <= &self.to
+        date >= &self.start && date <= &self.end
     }
     /// Allow the history range to be iterated over without consuming it.
     pub fn iter(&self) -> DateRangeIterator {
-        DateRangeIterator { from: self.from, thru: self.to }
+        DateRangeIterator { from: self.start, thru: self.end }
     }
     /// Returns the dates as a tuple of ISO8601 formatted strings.
     pub fn as_iso8601(&self) -> (String, String) {
         use toolslib::date_time::isodate;
-        (isodate(&self.from), isodate(&self.to))
+        (isodate(&self.start), isodate(&self.end))
     }
     /// A helper that builds a list of history range from a list of dates.
     ///
@@ -241,7 +241,7 @@ impl IntoIterator for DateRange {
     type Item = NaiveDate;
     type IntoIter = DateRangeIterator;
     fn into_iter(self) -> Self::IntoIter {
-        DateRangeIterator { from: self.from, thru: self.to }
+        DateRangeIterator { from: self.start, thru: self.end }
     }
 }
 /// Create an iterator that will return all dates within the range.
@@ -249,7 +249,7 @@ impl IntoIterator for &DateRange {
     type Item = NaiveDate;
     type IntoIter = DateRangeIterator;
     fn into_iter(self) -> Self::IntoIter {
-        DateRangeIterator { from: self.from, thru: self.to }
+        DateRangeIterator { from: self.start, thru: self.end }
     }
 }
 
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     pub fn iterate() {
         let range = DateRange::new(get_date(2022, 6, 1), get_date(2022, 6, 30));
-        let mut testcase = range.from.clone();
+        let mut testcase = range.start.clone();
         let test_cases: Vec<NaiveDate> = range.into_iter().collect();
         assert_eq!(test_cases.len(), 30);
         for day in 0..30 {
@@ -320,8 +320,8 @@ mod tests {
         let testcase = DateRange::from_dates(vec![test_date]);
         assert_eq!(testcase.len(), 1);
         assert!(testcase[0].is_one_day());
-        assert_eq!(test_date, testcase[0].from);
-        assert_eq!(test_date, testcase[0].to);
+        assert_eq!(test_date, testcase[0].start);
+        assert_eq!(test_date, testcase[0].end);
         let (from, to) = testcase[0].as_iso8601();
         assert_eq!(from, to);
     }
@@ -340,10 +340,10 @@ mod tests {
         let test_dates = vec![get_date(2022, 7, 3), get_date(2022, 6, 30), get_date(2022, 7, 4), get_date(2022, 7, 1)];
         let test_case = DateRange::from_dates(test_dates.clone());
         assert_eq!(test_case.len(), 2);
-        assert_eq!(test_dates[1], test_case[0].from);
-        assert_eq!(test_dates[3], test_case[0].to);
-        assert_eq!(test_dates[0], test_case[1].from);
-        assert_eq!(test_dates[2], test_case[1].to);
+        assert_eq!(test_dates[1], test_case[0].start);
+        assert_eq!(test_dates[3], test_case[0].end);
+        assert_eq!(test_dates[0], test_case[1].start);
+        assert_eq!(test_dates[2], test_case[1].end);
     }
 
     #[test]

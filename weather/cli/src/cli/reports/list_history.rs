@@ -71,11 +71,11 @@ pub mod text {
                     macro_rules! to_strings {
                         ($history_range:expr) => {
                             match $history_range.is_one_day() {
-                                true => fmt_date(&$history_range.from, date_format),
+                                true => fmt_date(&$history_range.start, date_format),
                                 false => format!(
                                     "{} thru {}",
-                                    fmt_date(&$history_range.from, date_format),
-                                    fmt_date(&$history_range.to, date_format)
+                                    fmt_date(&$history_range.start, date_format),
+                                    fmt_date(&$history_range.end, date_format)
                                 ),
                             }
                         };

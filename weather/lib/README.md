@@ -27,24 +27,17 @@ The `backend` module implements the `DataAPI` used by the `WeatherData` API. It 
 This is arguably the most interesting within the library.
 
 Regardless of the implementation historical weather data continues to be written into `Zip` 
-archives and new locations are written into the locations document. This makes it easy to backup 
-data and switch between implementations.
+archives and new locations are written into the locations document. This is a convenient way
+to easily back data and reload the database as changes occur.
 
 #### The `backend::filesys` module.
 
 This module contains support for the files used in weather data. It implements `Zip` file
-archive reading and update along with the weather locations `JSON` document. It also has 
+archive reading and writing along with the weather locations `JSON` document. It also has 
 operating system independent implementations for weather data directories and files.
 
 #### The `backend::db` module.
 
-This module contains the various database implementations available. All of the implementations 
-are currently built on top of `Sqlite3`. There are three (3) implementations.
-
-* A *hybrid* model where location information and weather data metadata is stored in the 
-  database.  Weather history data history is stored in the `ZIP` archives.
-* A *document* based model where all weather data history is stored in the database. Weather 
-  history data is stored as `JSON` documents in the database. The `JSON` documents can 
-  optionally be compressed.
-* A fully *normalized* database model where all weather data history and locations are stored in 
-  tables.
+This module contains support for the database implementation of weather data history. It
+also uses the `filesys` module to update the weather history archives and locations document
+as changes are made.

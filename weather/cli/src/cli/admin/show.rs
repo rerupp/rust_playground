@@ -1,13 +1,13 @@
 //! The show administrative information command.
-use super::*;
+use crate::cli::Result;
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::io::Write;
-// use clap::{Arg, ArgAction, ArgMatches, Command};
 use toolslib::mbufmt;
 use toolslib::text::Report;
 use toolslib::{rptcols, rptrow, text};
 use weather_lib::admin_prelude::{Components, LocationDetails, WeatherAdmin};
 
-pub(super) use v3::ShowCmd;
+pub(in crate::cli::admin) use v3::ShowCmd;
 mod v3 {
     use super::*;
 
@@ -75,7 +75,7 @@ mod v3 {
                 let size = mbufmt!(db_details.size);
                 let locations = mbufmt!(db_details.location_details.len());
                 let histories = mbufmt!(db_details.location_details.iter().map(|d| d.histories).sum::<usize>());
-                report.text(rptrow!(&db_details.mode, size, locations, histories));
+                report.text(rptrow!("Database", size, locations, histories));
             } else {
                 log::debug!("Weather data has not been initialized to use a database.");
             }
@@ -121,7 +121,7 @@ mod v3 {
             if let Some(db_details) = &components.db_details {
                 let fs_details = &components.fs_details;
                 if let Some(aliases) = cmp_locations(&fs_details.location_details, &db_details.location_details) {
-                    missing_locations.push(MissingLocations::new(&db_details.mode.to_string(), aliases));
+                    missing_locations.push(MissingLocations::new("Database", aliases));
                 }
                 if let Some(aliases) = cmp_locations(&db_details.location_details, &fs_details.location_details) {
                     missing_locations.push(MissingLocations::new(FILESYS_COMPONENT, aliases));
@@ -230,13 +230,13 @@ mod v3 {
                             }),
                             std::cmp::Ordering::Equal => (),
                             std::cmp::Ordering::Greater => missing_histories.push(MissingHistories {
-                                component: db_details.mode.to_string(),
+                                component: "Database".to_string(),
                                 alias: fs_location.alias.to_string(),
                                 histories: fs_location.histories - db_location.histories,
                             }),
                         },
                         None => missing_histories.push(MissingHistories {
-                            component: db_details.mode.to_string(),
+                            component: "Database".to_string(),
                             alias: fs_location.alias.to_string(),
                             histories: fs_location.histories,
                         }),

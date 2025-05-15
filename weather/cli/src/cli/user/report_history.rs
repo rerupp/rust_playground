@@ -151,7 +151,7 @@ mod v4 {
     pub fn execute(weather_data: &WeatherData, args: ArgMatches) -> Result<()> {
         let location = get_location(&args);
         let criteria = DataCriteria { filters: vec![location], icase: true, sort: false };
-        let date_range = DateRange { from: get_from(&args), to: get_thru(&args) };
+        let date_range = DateRange { start: get_from(&args), end: get_thru(&args) };
         let histories = weather_data.get_daily_history(criteria, date_range)?;
         let report_selector = create_report_selector(&args);
         let report_args = ReportArgs::new(&args);

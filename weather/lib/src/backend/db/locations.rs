@@ -393,13 +393,12 @@ mod v3 {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::db_conn;
 
         fn testenv(fixture: &testlib::TestFixture) -> Connection {
             let test_files = testlib::test_resources().join("db");
             fixture.copy_resources(&test_files);
             let weather_dir = WeatherDir::try_from(fixture.to_string()).unwrap();
-            admin::init_db(&weather_dir, DbMode::Hybrid, true, true, 1).unwrap();
+            admin::init_db(&weather_dir, true, true, 1).unwrap();
             db_conn!(&weather_dir).unwrap()
         }
 

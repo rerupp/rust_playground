@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "py_lib",
+]
+
+[workspace.dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+# 0.10.0 has introduced more changes that break the build
+#chrono-tz = { version = "0.10.0", features = ["serde"] }
+chrono-tz = { version = "0.9.0", features = ["serde"] }
+log = "0.4"
+rusqlite = { version = "0.32.1", features = ["blob", "bundled", "chrono"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = { version = "0.8.8", features = ["preserve_order"] }
+toolslib = { path = "../toolslib" }

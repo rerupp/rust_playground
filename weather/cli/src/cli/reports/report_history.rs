@@ -172,8 +172,8 @@ pub mod text {
                     row.push(text!(fmt_float(&history.wind_speed, 1)));
                     row.push(text!(fmt_float(&history.wind_gust, 1)));
                     row.push(text!(fmt_wind_bearing(&history.wind_direction)));
-                    row.push(text!(fmt_uv_index(&history.uv_index)));
                     row.push(text!(fmt_float(&history.pressure, 1)));
+                    row.push(text!(fmt_uv_index(&history.uv_index)));
                 }
                 // if self.summary {
                 if self.report_selector.summary {

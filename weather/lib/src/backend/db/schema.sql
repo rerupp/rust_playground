@@ -1,15 +1,5 @@
 BEGIN;
 
--- The mode the database is running in
-CREATE TABLE IF NOT EXISTS config
-(
-    id INTEGER PRIMARY KEY,
-    hybrid INTEGER NOT NULL,
-    document INTEGER NOT NULL,
-    full INTEGER NOT NULL,
-    compress INTEGER NOT NULL
-);
-
 -- The weather locations table
 CREATE TABLE IF NOT EXISTS locations
 (
@@ -45,20 +35,6 @@ CREATE INDEX IF NOT EXISTS idx_metadata_lid on metadata(lid);
 
 -- cover the metadata dates with an index
 CREATE INDEX IF NOT EXISTS idx_metadata_date on metadata(date);
-
--- create the document based history table
-CREATE TABLE IF NOT EXISTS documents
-(
-    id INTEGER PRIMARY KEY,
-    mid INTEGER NOT NULL,
-    plain TEXT,
-    zipped BLOB,
-    size INTEGER,
-    FOREIGN KEY (mid) REFERENCES metadata(id)
-);
-
--- cover the metadata id with an index
-CREATE INDEX IF NOT EXISTS idx_documents_mid on documents(mid);
 
 CREATE TABLE IF NOT EXISTS history
 (

@@ -1,10 +1,10 @@
 //! The sync database with archives command.
-use super::*;
-// use clap::{Arg, ArgAction, ArgMatches, Command};
-// use weather_lib::admin_prelude::WeatherAdmin;
+use crate::cli::Result;
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use weather_lib::admin_prelude::WeatherAdmin;
 use weather_lib::prelude::DataCriteria;
 
-pub(super) use v3::ReloadCmd;
+pub(in crate::cli::admin) use v3::ReloadCmd;
 mod v3 {
     //! The current version of the reload command.
     use super::*;

@@ -10,14 +10,11 @@ pub(in crate::backend::db) use v3::{load_db, delete_db, info, init_schema};
 mod v3 {
     //! The current implementation of the US Cities database API.
     use super::*;
-    //     use super::*;
-    use crate::admin::admin_entities::UsCitiesInfo;
+    use crate::admin::entities::UsCitiesInfo;
     use csv::{Reader, StringRecord};
-    //     use entities::LocationCriteria;
     use rusqlite::{Params, Rows};
     use std::fs::File;
-    //     use std::{fs::File, path::PathBuf};
-    //
+
     pub struct UsCities {
         weather_dir: WeatherDir,
         source: PathBuf,

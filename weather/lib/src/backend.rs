@@ -2,7 +2,6 @@
 
 pub mod db;
 pub mod filesys;
-mod history;
 
 pub use config::Config;
 mod config;
@@ -131,7 +130,7 @@ impl DataAPI {
 }
 
 /// The `API` common to all the backend implementations.
-trait DataAdapter {
+trait DataAdapter: Send {
     /// Get the data adapter configuration.
     ///
     fn config(&self) -> &Config;
@@ -142,29 +141,6 @@ trait DataAdapter {
     /// - `histories` has the location and histories to add.
     ///
     fn add_daily_histories(&self, histories: &DailyHistories) -> Result<usize>;
-    /// Reports if all histories were added or not.
-    ///
-    /// # Arguments
-    ///
-    /// - `histories` is the full collection of weather histories.
-    /// - `filesys` is the collection of histories added to the archives.
-    /// - `db` is the collection of histories added to the database.
-    ///
-    fn audit_add_histories(&self, histories: &Vec<History>, filesys: Vec<&History>, db: Vec<&History>) {
-        let histories_len = histories.len();
-        let filesys_len = filesys.len();
-        let db_len = db.len();
-        if (histories_len == filesys_len) && (filesys_len == db_len) {
-            log::debug!("All histories added.")
-        } else {
-            log::warn!(
-                "{} histories received, {} archive histories added, {} DB histories added.",
-                histories_len,
-                filesys_len,
-                db_len
-            )
-        }
-    }
     /// Returns the daily weather data history for a location.
     ///
     /// # Arguments

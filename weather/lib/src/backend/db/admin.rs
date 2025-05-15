@@ -1,18 +1,20 @@
 //! The weather data administration database API.
-#![allow(unused)]
-use super::*;
-
-pub use v3::{
-    database_configuration, db_details, drop_db, init_db, reload, uscities_delete, uscities_info, uscities_load,
+use super::{
+    db_conn, db_connection, db_file, DB_FILENAME, history, locations, us_cities, DataCriteria, Error, Result,
+    WeatherDir, WeatherFile,
 };
-mod v3 {
+
+#[cfg(test)]
+use super::testlib;
+
+pub use v4::{db_details, drop_db, init_db, reload, uscities_delete, uscities_info, uscities_load};
+
+mod v4 {
     //! The implementation of weather data administration of a database.
     use super::*;
-    use us_cities as uscities;
-    use crate::{
-        admin::admin_entities::{DbDetails, DbMode, LocationDetails, UsCitiesInfo},
-        db_conn,
-    };
+    use crate::admin::entities::{DbDetails, LocationDetails, UsCitiesInfo};
+    use rusqlite::Connection;
+    use std::path::PathBuf;
 
     /// Initialize the database schema.
     ///
@@ -22,26 +24,16 @@ mod v3 {
     /// * `db_mode` is the database configuration to initialize.
     /// * `drop` when true will delete the schema before initialization.
     /// * `load` when true will load weather data into the database.
-    pub fn init_db(weather_dir: &WeatherDir, db_mode: DbMode, drop: bool, load: bool, threads: usize) -> Result<()> {
+    pub fn init_db(weather_dir: &WeatherDir, drop: bool, load: bool, threads: usize) -> Result<()> {
         if drop {
             drop_db(weather_dir, false)?;
         }
         let mut conn = db_conn!(weather_dir)?;
-        init_schema(&conn, &db_mode)?;
+        init_schema(&conn)?;
         if load {
             log::debug!("loading data");
             locations::load(&mut conn, weather_dir)?;
-            match db_mode {
-                DbMode::Hybrid => {
-                    hybrid_db::load(&mut conn, weather_dir)?;
-                }
-                DbMode::Document(compressed) => {
-                    document_db::load(weather_dir, compressed, threads)?;
-                }
-                DbMode::Normalized => {
-                    normalized_db::load(weather_dir, threads)?;
-                }
-            }
+            history::load(conn, weather_dir, threads)?;
         }
         Ok(())
     }
@@ -72,33 +64,12 @@ mod v3 {
         let db_details = if let Some(db_file) = db_file(weather_dir) {
             let size = db_file.size() as usize;
             let conn = db_connection(Some(db_file))?;
-            let mode = database_configuration(&conn)?;
             let locations_info = locations_details(&conn)?;
-            Some(DbDetails { mode, size, location_details: locations_info })
+            Some(DbDetails { size, location_details: locations_info })
         } else {
             None
         };
         Ok(db_details)
-    }
-
-    /// Get the database configuration.
-    ///
-    /// Arguments
-    ///
-    /// * `conn` is the database connection that will be used.
-    pub fn database_configuration(conn: &Connection) -> Result<DbMode> {
-        let mut stmt = conn.prepare("SELECT hybrid, document, full, compress FROM config")?;
-        let db_mode = stmt.query_row([], |row| {
-            let mode = if row.get("hybrid")? {
-                DbMode::Hybrid
-            } else if row.get("document")? {
-                DbMode::Document(row.get("compress")?)
-            } else {
-                DbMode::Normalized
-            };
-            Ok(mode)
-        })?;
-        Ok(db_mode)
     }
 
     /// Reload metadata and history for locations.
@@ -111,19 +82,8 @@ mod v3 {
         let mut reloaded = Vec::with_capacity(criteria.filters.len());
         if let Some(db_file) = db_file(weather_dir) {
             let mut conn = db_connection(Some(db_file))?;
-            let db_mode = database_configuration(&conn)?;
             for location in locations::get(&conn, &criteria.filters, true)? {
-                match db_mode {
-                    DbMode::Hybrid => {
-                        hybrid_db::reload(&mut conn, weather_dir, &location.alias)?;
-                    }
-                    DbMode::Document(compressed) => {
-                        document_db::reload(&mut conn, weather_dir, &location.alias, compressed)?;
-                    }
-                    DbMode::Normalized => {
-                        normalized_db::reload(&mut conn, weather_dir, &location.alias)?;
-                    }
-                }
+                history::reload(&mut conn, weather_dir, &location.alias)?;
                 reloaded.push(location.alias);
             }
         }
@@ -137,8 +97,8 @@ mod v3 {
     /// * `weather_dir` is the weather data directory.
     /// *`csv_file` is the US Cities `CSV` file to load.
     pub fn uscities_load(weather_dir: &WeatherDir, csv_file: &PathBuf) -> Result<usize> {
-        let mut conn = uscities::db_conn(weather_dir)?;
-        uscities::init_schema(&conn)?;
+        let mut conn = us_cities::db_conn(weather_dir)?;
+        us_cities::init_schema(&conn)?;
         let mut stmt = conn.prepare("SELECT COUNT(*) from city")?;
         let count = stmt.query_row([], |row| {
             let count: usize = row.get(0)?;
@@ -146,7 +106,7 @@ mod v3 {
         })?;
         drop(stmt);
         if count == 0 {
-            uscities::load_db(&mut conn, csv_file)
+            us_cities::load_db(&mut conn, csv_file)
         } else {
             Err(Error::from("US Cities have already been loaded, delete it first."))
         }
@@ -158,7 +118,7 @@ mod v3 {
     ///
     /// * `weather_dir` is the weather data directory.
     pub fn uscities_delete(weather_dir: &WeatherDir) -> Result<()> {
-        uscities::delete_db(weather_dir)
+        us_cities::delete_db(weather_dir)
     }
 
     /// Show information about the US Cities database.
@@ -167,7 +127,7 @@ mod v3 {
     ///
     /// * `weather_dir` is the weather data directory.
     pub fn uscities_info(weather_dir: &WeatherDir) -> Result<UsCitiesInfo> {
-        uscities::info(weather_dir)
+        us_cities::info(weather_dir)
     }
 
     /// Get weather history information for locations.
@@ -211,49 +171,18 @@ mod v3 {
         }
     }
 
-    /// Insert the database configuration.
-    ///
-    /// # Arguments
-    ///
-    /// * `conn` is the database connection that will be used.
-    /// * `db_mode` is the database configuration.
-    fn init_config(conn: &Connection, db_mode: &DbMode) -> Result<()> {
-        log::debug!("db tables");
-        const SQL: &str = r#"
-            INSERT INTO config (hybrid, document, full, compress)
-                VALUES (:hybrid, :document, :normalize, :compress)
-            "#;
-        let (hybrid, document, normalize, compress) = match db_mode {
-            DbMode::Hybrid => (true, false, false, false),
-            DbMode::Document(compressed) => (false, true, false, *compressed),
-            DbMode::Normalized => (false, false, true, false),
-        };
-        let params = named_params! {
-            ":hybrid": hybrid,
-            ":document": document,
-            ":normalize": normalize,
-            ":compress": compress
-        };
-        match conn.execute(SQL, params) {
-            Ok(_) => Ok(()),
-            Err(err) => {
-                let reason = format!("Error setting config table ({}).", &err);
-                Err(Error::from(reason))
-            }
-        }
-    }
-
     /// Initialize the database schema.
     ///
     /// # Arguments
     ///
     /// * `conn` is the database connection that will be used.
     /// * `db_mode` is the database configuration.
-    fn init_schema(conn: &Connection, db_mode: &DbMode) -> Result<()> {
+    fn init_schema(conn: &Connection) -> Result<()> {
         log::debug!("db schema");
         let sql = include_str!("schema.sql");
         match conn.execute_batch(sql) {
-            Ok(_) => init_config(conn, db_mode),
+            // Ok(_) => init_config(conn),
+            Ok(_) => Ok(()),
             Err(err) => {
                 let reason = format!("Error initializing schema ({}).", &err);
                 Err(Error::from(reason))
@@ -297,30 +226,9 @@ mod v3 {
             let weather_dir = WeatherDir::try_from(fixture.to_string()).unwrap();
             let db_file = PathBuf::from(&weather_dir.to_string()).join(DB_FILENAME);
             assert!(!db_file.exists());
-            // hybrid
-            init_db(&weather_dir, DbMode::Hybrid, true, true, 1).unwrap();
+            init_db(&weather_dir, false, false, 1).unwrap();
             assert!(db_file.exists());
-            let testcase = db_details(&weather_dir).unwrap().expect("Did not get DbDetails");
-            assert_eq!(testcase.mode, DbMode::Hybrid);
-            drop_db(&weather_dir, true).unwrap();
-            assert!(!db_file.exists());
-            // document uncompressed
-            init_db(&weather_dir, DbMode::Document(false), false, true, 1).unwrap();
-            assert!(db_file.exists());
-            let testcase = db_details(&weather_dir).unwrap().expect("Did not get DbDetails");
-            assert_eq!(testcase.mode, DbMode::Document(false));
-            drop_db(&weather_dir, false).unwrap();
-            // document compressed
-            init_db(&weather_dir, DbMode::Document(true), false, true, 1).unwrap();
-            assert!(db_file.exists());
-            let testcase = db_details(&weather_dir).unwrap().expect("Did not get DbDetails");
-            assert_eq!(testcase.mode, DbMode::Document(true));
-            drop_db(&weather_dir, false).unwrap();
-            // normalized
-            init_db(&weather_dir, DbMode::Normalized, false, false, 1).unwrap();
-            assert!(db_file.exists());
-            let testcase = db_details(&weather_dir).unwrap().expect("Did not get DbDetails");
-            assert_eq!(testcase.mode, DbMode::Normalized);
+            db_details(&weather_dir).unwrap().expect("Did not get DbDetails");
             drop_db(&weather_dir, false).unwrap();
         }
     }

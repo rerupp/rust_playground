@@ -122,20 +122,19 @@ mod timeline_client {
         /// * `date_range` is the history dates to query.
         ///
         fn execute(&self, location: &Location, date_range: &DateRange) -> Result<()> {
-            debug_assert!(self.active_request.borrow().is_none(), "Request already active.");
-            let request = self.create_request(location, date_range)?;
-            let client_handle = self.rest_client.execute(request);
-            self.active_request.borrow_mut().replace(ActiveRequest {
-                location: Location {
-                    name: location.name.to_string(),
-                    alias: location.alias.to_string(),
-                    longitude: location.longitude.to_string(),
-                    latitude: location.latitude.to_string(),
-                    tz: location.tz.to_string(),
-                },
-                client_handle,
-            });
-            Ok(())
+            let is_active_request = self.active_request.borrow().is_some();
+            match is_active_request {
+                true => Err(Error::from("A request already in active."))?,
+                false => {
+                    let request = self.create_request(location, date_range)?;
+                    let client_handle = self.rest_client.execute(request);
+                    self.active_request.borrow_mut().replace(ActiveRequest {
+                        location: location.clone(),
+                        client_handle,
+                    });
+                    Ok(())
+                }
+            }
         }
         /// Query if the request has finished or return an error if there is no active request. `Ok(true)`
         /// guarantees the response is available.

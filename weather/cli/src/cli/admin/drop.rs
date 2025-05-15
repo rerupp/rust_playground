@@ -1,9 +1,9 @@
 //! The drop command
-use super::*;
-// use clap::{Arg, ArgAction, ArgMatches, Command};
-// use weather_lib::admin_prelude::WeatherAdmin;
+use crate::cli::Result;
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use weather_lib::admin_prelude::WeatherAdmin;
 
-pub(super) use v3::DropCmd;
+pub(in crate::cli::admin) use v3::DropCmd;
 mod v3 {
     //! The current version of the weather data administration drop command.
     use super::*;

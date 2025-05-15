@@ -1,17 +1,18 @@
 //! The filesystem objects that support implementing weather data using `ZIP` archives.
 use super::*;
 
-pub(crate) use admin::MigrateConfig;
 pub(crate) mod admin;
 
+mod files;
 pub(crate) use files::{WeatherDir, WeatherFile};
-pub(crate) mod files;
 
-pub(super) use archives::{archive_history_collector, ArchiveMd, WeatherArchive, WeatherHistory, WeatherHistoryUpdate};
 pub(crate) mod archives;
+pub(super) use archives::{archive_history_collector, ArchiveMd, WeatherArchive, WeatherHistory, WeatherHistoryUpdate};
 
-pub(super) use locations::weather_locations;
+mod history;
+
 mod locations;
+pub(super) use locations::weather_locations;
 
 /// Get a [WeatherDir] instance.
 pub(crate) fn weather_dir(dirname: &str) -> Result<WeatherDir> {

@@ -1,12 +1,13 @@
 //! The weather data administration migrate command.
-use super::*;
-// use std::path::PathBuf;
-// use std::result;
-// use clap::{Arg, ArgAction, ArgMatches, Command};
-// use weather_lib::admin_prelude::WeatherAdmin;
-use weather_lib::prelude::DataCriteria;
+use crate::cli::Result;
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use std::path::PathBuf;
+use weather_lib::{
+    admin_prelude::WeatherAdmin,
+    prelude::DataCriteria
+};
 
-pub(super) use v3::MigrateCmd;
+pub(in crate::cli::admin) use v3::MigrateCmd;
 mod v3 {
     //! The current version of the migrate command.
     use super::*;

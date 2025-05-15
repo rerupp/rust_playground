@@ -1,5 +1,6 @@
 //! The weather data administration cli.
-use super::*;
+use crate::cli::{Command, Result};
+use clap::ArgMatches;
 use weather_lib::admin_prelude::WeatherAdmin;
 
 mod drop;

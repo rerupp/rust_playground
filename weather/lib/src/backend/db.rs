@@ -2,23 +2,16 @@
 
 pub(crate) mod admin;
 mod archive;
-mod document_db;
-mod hybrid_db;
 mod locations;
 mod metadata;
-mod normalized_db;
 mod query;
 pub(crate) mod us_cities;
+mod history;
 
 use super::*;
-use crate::admin::admin_entities::DbMode;
-use crate::db_conn;
 use crate::entities;
-use chrono::NaiveDate;
-use filesys::{archive_history_collector, ArchiveMd, WeatherArchive, WeatherDir, WeatherFile, WeatherHistoryUpdate};
+use filesys::{WeatherDir, WeatherFile, WeatherHistoryUpdate};
 use rusqlite::{named_params, Connection, Transaction};
-use std::cmp;
-use toolslib::stopwatch::StopWatch;
 
 /// The name of the database
 const DB_FILENAME: &str = "weather_data.db";
@@ -37,12 +30,12 @@ pub fn db_connection(optional_file: Option<WeatherFile>) -> Result<Connection> {
 
 /// A helper to create a database connection.
 // move this outside the version
-#[macro_export]
 macro_rules! db_conn {
     ($weather_dir:expr) => {
         $crate::backend::db::db_connection(Some($weather_dir.file(DB_FILENAME)))
     };
 }
+use db_conn;
 
 /// Create a [`DataAdapter`] based on the database configuration.
 ///
@@ -50,13 +43,10 @@ macro_rules! db_conn {
 ///
 /// `dirname` is the directory containing weather data.
 pub(in crate::backend) fn data_adapter(config: Config) -> Result<Box<dyn DataAdapter>> {
+    log::debug!("Database data adapter");
     let weather_dir = WeatherDir::try_from(&config)?;
-    let conn = db_conn!(&weather_dir)?;
-    match admin::database_configuration(&conn)? {
-        DbMode::Hybrid => hybrid_db::data_adapter(config, weather_dir),
-        DbMode::Document(compressed) => document_db::data_adapter(config, weather_dir, compressed),
-        DbMode::Normalized => normalized_db::data_adapter(config, weather_dir),
-    }
+    let data_adapter = DbDataAdapter { config, weather_dir };
+    Ok(Box::new(data_adapter))
 }
 
 /// Get the size estimate of a table in the database. This is specific to `sqlite`.
@@ -110,3 +100,87 @@ pub(crate) fn db_file(weather_dir: &WeatherDir) -> Option<WeatherFile> {
         }
     }
 }
+
+/// The database data adapter implementation.
+struct DbDataAdapter {
+    config: Config,
+    /// The weather data directory.
+    weather_dir: WeatherDir,
+}
+impl DataAdapter for DbDataAdapter {
+    /// Get the normalized data adapter configuration.
+    fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Add weather data history for a location.
+    ///
+    /// # Arguments
+    ///
+    /// * `daily_histories` contains the location histories to add.
+    fn add_daily_histories(&self, daily_histories: &DailyHistories) -> Result<usize> {
+        let mut conn = db_conn!(&self.weather_dir)?;
+        history::add(&mut conn, &self.weather_dir, daily_histories)
+    }
+
+    /// Returns the daily weather data history for a location.
+    ///
+    /// # Arguments
+    ///
+    /// * `location` identifies what location should be used.
+    /// * `history_range` specifies the date range that should be used.
+    fn daily_histories(&self, location: Location, date_range: DateRange) -> Result<DailyHistories> {
+        let mut conn = db_conn!(&self.weather_dir)?;
+        history::get(&mut conn, location, date_range)
+    }
+
+    /// Get the weather history dates for locations.
+    ///
+    /// # Arguments
+    ///
+    /// * `criteria` identifies the locations.
+    fn history_dates(&self, criteria: DataCriteria) -> Result<Vec<HistoryDates>> {
+        let conn = db_conn!(&self.weather_dir)?;
+        query::history_dates(&conn, criteria)
+    }
+
+    /// Get a summary of the weather history available for locations.
+    ///
+    /// # Arguments
+    ///
+    /// * `criteria` identifies the locations that should be used.
+    fn history_summaries(&self, criteria: DataCriteria) -> Result<Vec<HistorySummaries>> {
+        let mut conn = db_conn!(&self.weather_dir)?;
+        history::summary(&mut conn, &self.weather_dir, criteria)
+    }
+
+    /// Add a location into the database.
+    ///
+    /// # Arguments
+    ///
+    /// * `location` is the location that will be added.
+    fn add_location(&self, location: Location) -> Result<()> {
+        let mut conn = db_conn!(&self.weather_dir)?;
+        locations::add(&mut conn, location, &self.weather_dir)
+    }
+
+    /// Get the metadata for weather locations.
+    ///
+    /// # Arguments
+    ///
+    /// * `criteria` identifies the locations of interest.
+    fn locations(&self, criteria: DataCriteria) -> Result<Vec<Location>> {
+        let conn = db_conn!(&self.weather_dir)?;
+        locations::get(&conn, &criteria.filters, criteria.sort)
+    }
+
+    /// Search for locations.
+    ///
+    /// # Arguments
+    ///
+    /// * `criteria` is used to filter the locations search.
+    fn search(&self, criteria: LocationCriteria) -> Result<Vec<Location>> {
+        locations::search(&self.config, criteria)
+    }
+}
+// }

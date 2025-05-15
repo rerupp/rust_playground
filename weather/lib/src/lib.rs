@@ -88,8 +88,8 @@ mod admin;
 
 /// The public administration data structures.
 pub mod admin_prelude {
-    pub use super::admin::{
-        admin_entities::{Components, DbDetails, DbMode, FilesysDetails, LocationDetails, UsCitiesInfo},
-        create_weather_admin, weather_admin, WeatherAdmin,
+    pub use crate::admin::{
+        entities::{Components, DbDetails, FilesysDetails, LocationDetails, UsCitiesInfo},
+        weather_admin, WeatherAdmin,
     };
 }

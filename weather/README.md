@@ -14,16 +14,16 @@ apples and oranges.
 ### Background
 
 The original `Python` implementation was built on top of the *DarkSky* weather data `REST` API.
-Even though *DarkSky* API is no longer publically available, I had *DarkSky* historical data from 
-the `Python` project that was. Implementing a CLI in `Rust` similar to the `Python` version
-would allow a pretty deep dive into `Rust` and its ecosystem.
+Even though *DarkSky* API is no longer publicly available, I had *DarkSky* historical data from 
+the `Python` project that had already been collected. Implementing a CLI in `Rust` similar to the 
+`Python` version would allow a pretty deep dive into `Rust` and its ecosystem.
 
 ### Initial Release
 
 Prior to the October 2023 version, the backend data was fully *DarkSky* based. The implementation
 used the same data archives as the `Python` project. Although there were some minor differences
 it did reproduce the `Phyton` CLI. The Rust `Zip` archive debug binary was 3-4 times faster than
-`Python` and relase binaries where 6-8+ times faster.
+`Python` and release binaries where 6-8+ times faster.
 
 ### October 2023 Release
 
@@ -69,7 +69,7 @@ Here's what bugs me.
 
 - One of the most annoying issues with `RustRover` is compiler errors. Too many times when 
   compiling code, the build window shows the build failed but there is nothing in the output window.
-  I continually need to drop out to the command line, run a `cargo build` then scroll throught 
+  I continually need to drop out to the command line, run a `cargo build` then scroll through 
   the output to find errors. Arg!!!
 - Debugging is problematic. When debugging simple unit tests, break points are missed 
   forcing you to step into functions. When stepping into functions, more times than not, you 
@@ -77,10 +77,21 @@ Here's what bugs me.
 
 Most of the CLI source code has either been refactored or removed. A new text report manager
 was added to `toolslib` allowing a common report to be used by the `rh` command and the TUI.
-I drank the Rust coolade and started taking advantage of the `Result` and `ControlFlow` constructs.
-After 2 years with Rust I have gained a lot of respect for the language. There have been some
-pretty brutal refactoring sessions and I have a lot of confidence in the language facilities to 
-help me through the changes.
+I drank the Rust kool aide and started taking advantage of the `Result` and `ControlFlow` 
+constructs. After 2 years with Rust I have gained a lot of respect for the language. There have 
+been some pretty brutal refactoring sessions and I have a lot of confidence in the language
+facilities to help me through the changes.
+
+### April 2025 Release
+
+This release includes a `Python` GUI and `Py03` bindings to the weather data library. I was
+delighted in how easy it was to create the interface between `Python` and `Rust`. Performance 
+was the biggest surprise. Even thought there isn't megabytes of data being moved between 
+runtimes it is really quick.
+
+The `py_weather` directory at the root of the repository contains the `Python` GUI and `Py03` 
+bindings. At some point the project should be renamed to reflect it is not just a `Rust` project 
+but that is for another day.
 
 ## Project Structure
 

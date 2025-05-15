@@ -78,7 +78,7 @@ mod v4 {
                     let location = locations.pop().unwrap();
                     let from = args.get_one::<NaiveDate>(FROM).unwrap();
                     let to = args.get_one::<NaiveDate>(THRU).map_or(from, |d| d);
-                    let date_range = DateRange { from: from.clone(), to: to.clone() };
+                    let date_range = DateRange { start: from.clone(), end: to.clone() };
                     match weather_data.get_history_client() {
                         Err(error) => error!(error.to_string()),
                         Ok(client) => {
