@@ -1,6 +1,6 @@
-# RUST Stuff
+# The `Rust` Playground
 
-This repository has a collection of RUST examples and utilities.
+The repository contains a collection of different `Rust` based programs and libraries.
 
 ## Why Rust?
 
@@ -11,33 +11,42 @@ surprised due to how (relatively) new the language was.
 I spent a week or so going through *The Rust Programming Language* and came away wanting to explore
 it more. If I could come up with some type of project I could take her out for a spin so to speak.
 
-## Projects in this repository
+## Repository Projects
 
-Originally this started out with just an implementation of the weather project however as time went
-by this past year several other projects were added.
+### Historical Weather Data
 
-### The weather Project
-
-Several years ago I wanted to compare historical weather trends for areas on the west coast. The
-outcome of that was a `Python` project supporting a command line interface, GUI interface, and a
-simple REST based end point. The implementation and gory details can be reviewed in my `weather`
+The repository originally started out with a `weather` project which was a clone of the `Python` 
+project command line. The implementation and gory details are still available in my `weather`
 project on GitHub.
 
-I decided building a CLI in Rust that basically emulates the was CLI in `Python` would be a fun
-journey. Having a reference implementation would allow me to try and duplicate command output. If I
-really needed to find out how I implemented something I could crank up `PyCharm` and take a look.
+The project now includes a `Rust` based terminal UI and a `Python` based GUI.
 
-### The fsview Project
+#### The `weather` Project
+
+The `weather` project contains the `Rust` based implementation of the `Python` CLI, the terminal 
+UI, and the library used to read and write historical weather data. The readme file in the 
+project contains the gory details of how to bootstrap and build the project.
+
+This project should be built before using the `Python` GUI in order to bootstrap the historical 
+weather data directory.
+
+#### The `py_weather` Project
+
+This project contains the `Python` GUI and `PyO3` weather data bindings. At some point the
+GIT repository should be renamed to reflect that it is not just a `Rust` project but that is for
+another day.
+
+### The `fsview` Project
 
 There's more detail within the crate `README.md` however from a mile high view this project will
 scan disk folders and then find duplicate files. It is currently implemented with a CLI interface.
 
-### The toolslib Project
+### The `toolslib` Project
 
-This is a collection of tools and utilities that are common to both the *fsview* and *weather*
+This is a collection of tools and utilities that are common to both the `fsview` and `weather`
 projects. Nothing fancy just a place to store common code.
 
-### The trace Project
+### The `trace` Project
 
 This is a `proc` macro library. It allows you to adorn functions and `struct` instance methods with
 annotations to log entry into the function or method. I was hoping to have something like
@@ -46,42 +55,46 @@ time.
 
 ## A quick Rust review
 
-The first year or so was pretty frustrating. Coming from a C++, C#, and Java background, thinking
-outside the object model architecture those languages employ was difficult. Almost the opposite of
-moving from Fortran and C to an object oriented architecture.
+The first year or so was pretty frustrating. Coming from a C++, C#, and Java background building
+as a "Rustacean" was certainly a change. Almost the opposite of moving from languages like
+`Fortran` and `C` to an object model architecture.
 
-Now that it has been a little over 2 years I really like working with this language. I feel like 
-the language still needs to mature a bit but the community is active. While asychronous function 
-calls are supported in the language the runtime is left to `crates.io`. It would really be 
-nice if there was an official library version
+Now that I've got several years playing with `Rust`, I really like the language. Object lifetimes,
+while sometimes frustrating, are much easier to work through and follow. While still a young
+language it continues to mature and move forward. One of the most exciting growths is the
+progress being made towards asynchronous functions parity in the `std` library. 
 
-References to objects and their lifetimes continues to be a source of frustration for me. I  
-understand why they are needed and how to use them however getting into the lifetime muck can
-be a headache. That said the standard library has object counting containers such as `Rc<T>` that 
-provide an alternative. Yes there is overhead using them but we did that for years using `stl` 
-smart pointers.
-
+The development environment is also moving forward. The compiler is faster now and better at
+providing diagnostics for programming errors. When panics occur messages are more clear and
+precise, particularly for common errors. 
 
 ### Things I like
 
-* The absence of exceptions in code. I think that was one of the Rustisms I thought "yeah, right"
-  but I'm a believer now. Thank goodness for the syntactical surgar the Rust compiler team has in
-  place otherwise it would be a PITA.
-* The data is immutable by default paradigm is okay. It supports not having to build out
-  infrastructure allowing beans to be readonly like is so prevalent in C# and Java. Directly
-  referencing data in a bean is okay because you can't change it unless someone says it's okay.
-* Having the `cargo` tool to do tasks like compile, execute, and produce code documentation. I don't
-  need to learn a whole new language syntax such as `make`, `mvn`, or `gradle`.
+* The absence of exceptions in code. That was one of the `Rust` paradigms I thought "yeah, right"
+  but now I'm a believer.
+* The "data is immutable by default" paradigm. It facilitates read-only access to bean-like  
+  `struct`s by simply not marking them mutable. You don't need to introduce a read-only interface 
+  or add code metadata to access attributes.
+* Code refactoring. I've gone through some pretty major re-writes to the weather front-end and 
+  backend library. Assuming no logic errors are made, if it compiles it works. Really 
+  confidence inspiring.
+* `Rust` executables are quick. Enough said.
+* The `Rust` community crate registry. Packages such as `clap`, `chrono`, `serde`, `termio` and 
+  `rusqlite` are surprisingly mature.
+* The `cargo` tool. Using it perform tasks like add dependencies, compile, execute, and produce 
+  code documentation means I didn't need to learn a whole new language syntax such as with `make`, 
+  `mvn`, or `gradle`.
 
 ### Things I don't care for (today)
 
-* Compile time. I think there are plans to address this but it is annoying right now. For a large
-  project I can envision complie times that could take a long time to complete.
+* Compile time. There is progress being made on this front but compiles are still a little slow. 
+  For a really large project I could see this being an issue. On the other side the structure of 
+  a large project could mitigate some of my concerns.
 
 ## Rust notes
 
 This is a collection of things I seem to keep looking up when I come across issues.
 
 * `CARGO_LOG=cargo::core::compiler::fingerprint=info` will instruct `cargo` to log dependencies to
-  help you understand why rebuilds are occuring. This helped identify issues with `BitDefender`
-  muking with file timestamps and causing libraries to be rebuilt.
+  help you understand why rebuilds are occurring. This helped identify issues with `BitDefender`
+  messing with file timestamps and causing libraries to be rebuilt.
