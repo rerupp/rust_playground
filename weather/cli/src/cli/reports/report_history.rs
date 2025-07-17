@@ -1,5 +1,9 @@
 //! The weather data history reports.
-use super::*;
+//!
+use super::{csv_to_string, csv_write_record, json_to_string, text_title_separator};
+use serde_json::{json, Map, Value};
+use toolslib::{header, layout, report::ReportSheet};
+
 use chrono::prelude::*;
 use chrono_tz::*;
 use weather_lib::prelude::DailyHistories;
@@ -58,12 +62,14 @@ pub mod text {
             sanitize_report_selector(&mut report_selector);
             Self { report_selector, title_separator: false, date_format: None }
         }
+
         /// Add a separator between header rows and report text rows.
         ///
         pub fn with_title_separator(mut self) -> Self {
             self.title_separator = true;
             self
         }
+
         /// Use a custom date format for report dates.
         ///
         /// # Arguments
@@ -86,6 +92,7 @@ pub mod text {
             }
             self
         }
+
         /// Generates the report history text based report.
         ///
         /// # Arguments
@@ -154,33 +161,36 @@ pub mod text {
             let date_format = self.date_format.as_ref().map_or(DEFAULT_DATE_FORMAT, |format| format.as_str());
             for history in daily_histories.histories {
                 let mut row = Vec::with_capacity(columns);
-                row.push(text!(fmt_date(&history.date, date_format)));
+                row.push(toolslib::text!(fmt_date(&history.date, date_format)));
                 if self.report_selector.temperatures {
-                    row.push(text!(fmt_temperature(&history.temperature_high)));
-                    row.push(text!(fmt_temperature(&history.temperature_low)));
-                    row.push(text!(fmt_temperature(&history.temperature_mean)));
-                    row.push(text!(fmt_temperature(&history.dew_point)));
+                    row.push(toolslib::text!(fmt_temperature(&history.temperature_high)));
+                    row.push(toolslib::text!(fmt_temperature(&history.temperature_low)));
+                    row.push(toolslib::text!(fmt_temperature(&history.temperature_mean)));
+                    row.push(toolslib::text!(fmt_temperature(&history.dew_point)));
                 }
                 if self.report_selector.precipitation {
-                    row.push(text!(fmt_percent(&history.cloud_cover)));
-                    row.push(text!(fmt_percent(&history.humidity)));
-                    row.push(text!(fmt_percent(&history.precipitation_chance)));
-                    row.push(text!(fmt_float(&history.precipitation_amount, 2)));
-                    row.push(text!(history.precipitation_type.as_ref().map_or(Default::default(), |t| t.as_str())));
+                    row.push(toolslib::text!(fmt_percent(&history.cloud_cover)));
+                    row.push(toolslib::text!(fmt_percent(&history.humidity)));
+                    row.push(toolslib::text!(fmt_percent(&history.precipitation_chance)));
+                    row.push(toolslib::text!(fmt_float(&history.precipitation_amount, 2)));
+                    row.push(toolslib::text!(history
+                        .precipitation_type
+                        .as_ref()
+                        .map_or(Default::default(), |t| t.as_str())));
                 }
                 if self.report_selector.conditions {
-                    row.push(text!(fmt_float(&history.wind_speed, 1)));
-                    row.push(text!(fmt_float(&history.wind_gust, 1)));
-                    row.push(text!(fmt_wind_bearing(&history.wind_direction)));
-                    row.push(text!(fmt_float(&history.pressure, 1)));
-                    row.push(text!(fmt_uv_index(&history.uv_index)));
+                    row.push(toolslib::text!(fmt_float(&history.wind_speed, 1)));
+                    row.push(toolslib::text!(fmt_float(&history.wind_gust, 1)));
+                    row.push(toolslib::text!(fmt_wind_bearing(&history.wind_direction)));
+                    row.push(toolslib::text!(fmt_float(&history.pressure, 1)));
+                    row.push(toolslib::text!(fmt_uv_index(&history.uv_index)));
                 }
                 // if self.summary {
                 if self.report_selector.summary {
-                    row.push(text!(fmt_hhmm(&history.sunrise, &tz)));
-                    row.push(text!(fmt_hhmm(&history.sunset, &tz)));
-                    row.push(text!(fmt_moon_phase(&history.moon_phase)));
-                    row.push(text!(history.description.as_ref().map_or(Default::default(), |s| s.as_str())));
+                    row.push(toolslib::text!(fmt_hhmm(&history.sunrise, &tz)));
+                    row.push(toolslib::text!(fmt_hhmm(&history.sunset, &tz)));
+                    row.push(toolslib::text!(fmt_moon_phase(&history.moon_phase)));
+                    row.push(toolslib::text!(history.description.as_ref().map_or(Default::default(), |s| s.as_str())));
                 }
                 report.add_row(row);
             }
@@ -673,8 +683,8 @@ pub mod json {
 pub mod csv {
     /// The report history CSV based reporting implementation.
     ///
+    extern crate csv as csv_lib;
     use super::*;
-    use crate::cli::reports::csv_to_string;
     use toolslib::date_time::{get_tz_ts, isodate};
 
     /// The `CSV` based weather history report.
@@ -695,6 +705,7 @@ pub mod csv {
             sanitize_report_selector(&mut report_selector);
             Self(report_selector)
         }
+
         /// Generates the list history CSV based report.
         ///
         /// An error will be returned if there are issues writing the report.

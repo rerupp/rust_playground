@@ -1,12 +1,11 @@
 import tkinter as tk
+from copy import copy
 from tkinter import messagebox
 from tkinter.simpledialog import Dialog
 from typing import List, Optional
 
-from copy import copy
-
 from .add_location import AddLocation
-from .infrastructure import (WeatherView, WeatherEvent, Stopwatch)
+from .infrastructure import (Stopwatch, WeatherEvent, WeatherView)
 from .widgets import LocationsView
 from ..config import get_logger
 from ..domain import Location, LocationCriteria, WeatherData
@@ -95,11 +94,14 @@ class GetSearchCriteria(Dialog):
         self._location_criteria = location_criteria
 
         # set up the field attributes
-        self._name: Optional[tk.Entry] = None
-        self._name_value: Optional[tk.StringVar] = None
+        self._city: Optional[tk.Entry] = None
+        self._city_value: Optional[tk.StringVar] = None
 
         self._state: Optional[tk.Entry] = None
         self._state_value: Optional[tk.StringVar] = None
+
+        self._name: Optional[tk.Entry] = None
+        self._name_value: Optional[tk.StringVar] = None
 
         self._limit: Optional[tk.Entry] = None
         self._limit_value: Optional[tk.StringVar] = None
@@ -118,14 +120,17 @@ class GetSearchCriteria(Dialog):
 
         value_or_empty = lambda v: v if v else ''
 
-        self._name_value = tk.StringVar(parent, value=value_or_empty(self._location_criteria.name))
-        self._name = mk_entry(0, "Name:", self._name_value, 40)
+        self._city_value = tk.StringVar(parent, value=value_or_empty(self._location_criteria.city))
+        self._city = mk_entry(0, "City:", self._city_value, 40)
 
         self._state_value = tk.StringVar(parent, value=value_or_empty(self._location_criteria.state))
-        self._state = mk_entry(1, "State:", self._state_value, 2)
+        self._state = mk_entry(1, "State:", self._state_value, 25)
+
+        self._name_value = tk.StringVar(parent, value=value_or_empty(self._location_criteria.name))
+        self._name = mk_entry(2, "Name:", self._name_value, 40)
 
         self._limit_value = tk.StringVar(parent, value=str(self._location_criteria.limit))
-        self._limit = mk_entry(2, "Limit:", self._limit_value, 5)
+        self._limit = mk_entry(3, "Limit:", self._limit_value, 5)
 
         def number_only(action, text):
             # 1 is the action code for insert
@@ -139,15 +144,17 @@ class GetSearchCriteria(Dialog):
         # %d is the action code, %S is the text string
         self._limit.configure(validate="key", validatecommand=(number_validator, '%d', '%S'), justify=tk.RIGHT)
 
-        return self._name
+        return self._city
 
     def apply(self, event=None):
         """Move the contents of the dialog fields into the location criteria."""
 
         value_or_none = lambda v: v if v else None
-        self._location_criteria.name = value_or_none(self._name_value.get().strip())
+        self._location_criteria.city = value_or_none(self._city_value.get().strip())
         self._location_criteria.state = value_or_none(self._state_value.get().strip())
+        self._location_criteria.name = value_or_none(self._name_value.get().strip())
         self._location_criteria.limit = int(self._limit.get())
+        print(self._location_criteria)
         self._is_canceled = False
 
     def is_canceled(self) -> bool:

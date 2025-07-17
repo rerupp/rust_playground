@@ -6,7 +6,15 @@
 //!
 //! Currently only 1 location can be used.
 //!
-use super::*;
+use super::{date_parser, trim_row_end, validate_location};
+use crate::cli::{
+    self, err, get_writer,
+    reports::report_history::{self as reports, ReportSelector},
+    ReportArgs,
+};
+use chrono::NaiveDate;
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use weather_lib::prelude::{DateRange, LocationFilter, WeatherData};
 
 /// The report history command name.
 pub(super) const COMMAND_NAME: &'static str = "rh";
@@ -14,9 +22,8 @@ pub(super) const COMMAND_NAME: &'static str = "rh";
 pub(super) use v4::{command, execute};
 mod v4 {
     //! The current implementation of the report history command.
+
     use super::*;
-    use crate::cli::reports::report_history::ReportSelector;
-    use reports::report_history as reports;
 
     /// The report temperature argument id.
     ///
@@ -148,11 +155,13 @@ mod v4 {
     /// * `weather_data` is the weather library API used by the command.
     /// * `args` contains the report history command arguments.
     ///
-    pub fn execute(weather_data: &WeatherData, args: ArgMatches) -> Result<()> {
-        let location = get_location(&args);
-        let criteria = DataCriteria { filters: vec![location], icase: true, sort: false };
+    pub fn execute(weather_data: &WeatherData, args: ArgMatches) -> cli::Result<()> {
+        let filter = LocationFilter::default().with_name(&get_location(&args));
         let date_range = DateRange { start: get_from(&args), end: get_thru(&args) };
-        let histories = weather_data.get_daily_history(criteria, date_range)?;
+        let histories = match weather_data.get_daily_history(filter, date_range) {
+            Ok(histories) => histories,
+            Err(error) => err!("Report history error getting daily history: {:?}", error)?,
+        };
         let report_selector = create_report_selector(&args);
         let report_args = ReportArgs::new(&args);
         let report = if report_args.csv() {
@@ -175,7 +184,7 @@ mod v4 {
         let mut writer = get_writer(&report_args)?;
         match writer.write_all(report.as_bytes()) {
             Ok(_) => Ok(()),
-            Err(err) => Err(Error::from(err)),
+            Err(error) => err!("Report history error writing report: {:?}", error),
         }
     }
 }

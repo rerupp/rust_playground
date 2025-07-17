@@ -1,5 +1,8 @@
 //! The location history summary report.
-use super::*;
+//!
+use super::{csv_to_string, csv_write_record, json_to_string, text_title_separator};
+use serde_json::{json, Value};
+use toolslib::{header, layout, report::ReportSheet};
 use weather_lib::prelude::HistorySummaries;
 
 pub mod text {
@@ -15,7 +18,7 @@ pub mod text {
     #[derive(Debug, Default)]
     pub struct Report(
         /// Controls if a separator row will be added between the report headers and report text.
-        bool
+        bool,
     );
     impl Report {
         /// A builder method that control if a separator row will be added between the report headers and report text.
@@ -54,24 +57,24 @@ pub mod text {
                 let raw_size = location_history_summary.raw_size.unwrap_or(0);
                 let compressed_size = location_history_summary.store_size.unwrap_or(0);
                 report.add_row(vec![
-                    text!(location_history_summary.location.name),
-                    text!(kib!(overall_size, 0)),
-                    text!(commafy(location_history_summary.count)),
-                    text!(kib!(raw_size, 0)),
-                    text!(kib!(compressed_size, 0)),
+                    toolslib::text!(location_history_summary.location.name),
+                    toolslib::text!(kib!(overall_size, 0)),
+                    toolslib::text!(commafy(location_history_summary.count)),
+                    toolslib::text!(kib!(raw_size, 0)),
+                    toolslib::text!(kib!(compressed_size, 0)),
                 ]);
                 total_size += overall_size;
                 total_history_count += location_history_summary.count;
                 total_raw_size += raw_size;
                 total_compressed_size += compressed_size;
             }
-            report.add_row((0..columns).into_iter().map(|_| text!(+ "=")).collect());
+            report.add_row((0..columns).into_iter().map(|_| toolslib::text!(+ "=")).collect());
             report.add_row(vec![
                 header!("Total"),
-                text!(kib!(total_size, 0)),
-                text!(commafy(total_history_count)),
-                text!(kib!(total_raw_size, 0)),
-                text!(kib!(total_compressed_size, 0)),
+                toolslib::text!(kib!(total_size, 0)),
+                toolslib::text!(commafy(total_history_count)),
+                toolslib::text!(kib!(total_raw_size, 0)),
+                toolslib::text!(kib!(total_compressed_size, 0)),
             ]);
             report
         }
@@ -82,6 +85,7 @@ pub mod csv {
     /// The list summary CSV based reporting implementation.
     ///
     use super::*;
+    extern crate csv as csv_lib;
 
     #[derive(Debug, Default)]
     pub struct Report;
@@ -124,9 +128,9 @@ pub mod json {
 
     /// The list summary JSON report.
     #[derive(Debug, Default)]
-    pub struct Report (
+    pub struct Report(
         /// Controls if the `JSON` document will be pretty printed or not.
-        bool
+        bool,
     );
     impl Report {
         /// Create a report instance and configure it to pretty print the `JSON` document.

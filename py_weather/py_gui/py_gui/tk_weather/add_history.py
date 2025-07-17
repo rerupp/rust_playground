@@ -9,7 +9,7 @@ from dateutil.relativedelta import relativedelta
 
 from .widgets import DateRangeSelector
 from ..config import get_logger
-from ..domain import DataCriteria, DateRange, HistoryClient, Location, WeatherData
+from ..domain import DateRange, HistoryClient, Location, LocationFilter, LocationFilters, WeatherData
 
 __all__ = ['AddHistory']
 log = get_logger(__name__)
@@ -18,8 +18,10 @@ log = get_logger(__name__)
 def _info(msg: str) -> None:
     messagebox.showinfo(title='Add History', message=msg)
 
+
 def _warn(msg: str) -> None:
     messagebox.showwarning(title='Add History', message=msg)
+
 
 def _error(msg: str, err: SystemError) -> None:
     log.error('%s:\n%s', msg, err)
@@ -36,8 +38,8 @@ class AddHistory:
         try:
             one_month = relativedelta(months=1)
             one_day = relativedelta(days=1)
-            data_criteria = DataCriteria(filters=[self._location.alias])
-            history_dates = self._weather_data.get_history_dates(data_criteria)[0].history_dates
+            filters = LocationFilters([LocationFilter(name=self._location.alias)])
+            history_dates = self._weather_data.get_history_dates(filters)[0].history_dates
             today = date.today()
             if not history_dates:
                 # when there are no history dates default to the last month

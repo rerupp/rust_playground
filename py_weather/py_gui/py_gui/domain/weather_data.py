@@ -1,11 +1,11 @@
 from typing import List
 
 import py_weather_lib as wd
-from py_weather_lib import (DailyHistories, DataCriteria, DateRange, HistoryClient, HistorySummaries, Location,
-                            LocationCriteria, LocationHistoryDates)
+from py_weather_lib import (DailyHistories, DateRange, HistoryClient, HistorySummaries, Location, LocationCriteria,
+                            LocationFilter, LocationFilters, LocationHistoryDates)
 
-__all__ = ['WeatherData', 'DailyHistories', 'DataCriteria', 'DateRange', 'HistoryClient', 'LocationHistoryDates',
-           'HistorySummaries', 'Location', 'LocationCriteria']
+__all__ = ['WeatherData', 'DailyHistories', 'DateRange', 'HistoryClient', 'HistorySummaries', 'Location',
+           'LocationCriteria', 'LocationFilter', 'LocationFilters', 'LocationHistoryDates']
 
 
 class WeatherData:
@@ -24,17 +24,17 @@ class WeatherData:
     def get_history_client(self) -> HistoryClient:
         return self._rust_bindings.get_history_client()
 
-    def get_daily_history(self, criteria: DataCriteria, history_range: DateRange) -> DailyHistories:
-        return self._rust_bindings.get_daily_history(criteria, history_range)
+    def get_daily_history(self, filter: LocationFilter, history_range: DateRange) -> DailyHistories:
+        return self._rust_bindings.get_daily_history(filter, history_range)
 
-    def get_history_dates(self, criteria=DataCriteria()) -> List[LocationHistoryDates]:
-        return self._rust_bindings.get_history_dates(criteria)
+    def get_history_dates(self, filters=LocationFilters()) -> List[LocationHistoryDates]:
+        return self._rust_bindings.get_history_dates(filters)
 
-    def get_history_summary(self, criteria=DataCriteria()) -> List[HistorySummaries]:
-        return self._rust_bindings.get_history_summary(criteria)
+    def get_history_summary(self, filters=LocationFilters()) -> List[HistorySummaries]:
+        return self._rust_bindings.get_history_summary(filters)
 
-    def get_locations(self, criteria=DataCriteria()) -> List[Location]:
-        return self._rust_bindings.get_locations(criteria)
+    def get_locations(self, filters=LocationFilters()) -> List[Location]:
+        return self._rust_bindings.get_locations(filters)
 
     def search_locations(self, criteria: LocationCriteria) -> List[Location]:
         return self._rust_bindings.search_locations(criteria)

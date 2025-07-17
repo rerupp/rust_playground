@@ -1,12 +1,27 @@
 //! Manages serializing and deserializing weather data history JSON documents.
 //!
-use super::{Error, History, Result};
+use crate::entities::History;
 use chrono::{DateTime, NaiveDate};
 use serde::{Deserialize, Serialize};
 
+
+/// Create a Locations specific error message.
+macro_rules! error {
+    ($($arg:tt)*) => {
+        crate::Error::from(format!("HistoryDocument {}", format!($($arg)*)))
+    }
+}
+
+/// Create an error from the locations specific error message.
+macro_rules! err {
+    ($($arg:tt)*) => {
+        Err(error!($($arg)*))
+    };
+}
+
 /// This is the structure used to serialize and deserialize [History].
 #[derive(Debug, Deserialize, Serialize)]
-struct HistoryDoc {
+struct HistoryDocument {
     /// The histories date.
     date: NaiveDate,
     /// The time in seconds (UTC) the sun rises.
@@ -48,7 +63,7 @@ struct HistoryDoc {
     /// A summary description of the weather.
     summary: Option<String>,
 }
-impl HistoryDoc {
+impl HistoryDocument {
     /// Convert the deserialized history to a [History] instance.
     ///
     /// # Arguments
@@ -86,19 +101,13 @@ impl HistoryDoc {
         }
     }
 }
-impl From<&History> for HistoryDoc {
+impl From<&History> for HistoryDocument {
     /// Convert [History] into the document that can be serialized and deserialized.
     fn from(history: &History) -> Self {
         Self {
             date: history.date,
-            sunrise: history
-                .sunrise
-                .map_or(None, |ndt| Some(ndt.and_utc()))
-                .map_or(None, |dt| Some(dt.timestamp())),
-            sunset: history
-                .sunset
-                .map_or(None, |ndt| Some(ndt.and_utc()))
-                .map_or(None, |dt| Some(dt.timestamp())),
+            sunrise: history.sunrise.map_or(None, |ndt| Some(ndt.and_utc())).map_or(None, |dt| Some(dt.timestamp())),
+            sunset: history.sunset.map_or(None, |ndt| Some(ndt.and_utc())).map_or(None, |dt| Some(dt.timestamp())),
             moon: history.moon_phase,
             tempmax: history.temperature_high,
             tempmin: history.temperature_low,
@@ -125,12 +134,11 @@ impl From<&History> for HistoryDoc {
 /// # Arguments
 ///
 /// * `history` will be converted to a sequence of bytes.
-pub fn to_json(history: &History) -> Result<String> {
-    match serde_json::to_string(&HistoryDoc::from(history)) {
+pub fn to_json(history: &History) -> crate::Result<String> {
+    match serde_json::to_string(&HistoryDocument::from(history)) {
         Ok(json) => Ok(json),
-        Err(err) => {
-            let reason = format!("History serialize error for {} on {} ({})", history.alias, history.date, err);
-            Err(Error::from(reason))
+        Err(error) => {
+            err!("'{}' error serializing history on {}: {:?}", history.alias, history.date, error)
         }
     }
 }
@@ -140,7 +148,7 @@ pub fn to_json(history: &History) -> Result<String> {
 /// # Arguments
 ///
 /// * `history` will be converted to a sequence of bytes.
-pub fn to_bytes(history: &History) -> Result<Vec<u8>> {
+pub fn to_bytes(history: &History) -> crate::Result<Vec<u8>> {
     Ok(to_json(history)?.into_bytes())
 }
 
@@ -150,12 +158,11 @@ pub fn to_bytes(history: &History) -> Result<Vec<u8>> {
 ///
 /// * `alias` is the locations alias name.
 /// * `bytes` will be converted to a [History] instance.
-pub fn from_bytes(alias: &str, bytes: &[u8]) -> Result<History> {
-    match serde_json::from_slice::<HistoryDoc>(bytes) {
+pub fn from_bytes(alias: &str, bytes: &[u8]) -> crate::Result<History> {
+    match serde_json::from_slice::<HistoryDocument>(bytes) {
         Ok(history_doc) => Ok(history_doc.to_history(alias)),
-        Err(err) => {
-            let reason = format!("Yikes... Error creating History for {} ({})", alias, err);
-            Err(Error::from(reason))
+        Err(error) => {
+            err!("'{}' error deserializing history: {:?}", alias, error)
         }
     }
 }

@@ -1,16 +1,11 @@
 //! The source of weather history for locations.
 
-use std::fmt::Debug;
-use super::*;
-use backend::Config;
-use entities::{DailyHistories, DateRange, Location};
-use reqwest::{
-    // use the blocking API since the rest client is async.
-    blocking::{Client, Request, RequestBuilder},
-    StatusCode,
-    Url,
+use crate::{
+    backend::Config,
+    entities::{DailyHistories, DateRange, Location},
+    Result,
 };
-use rest_client::{RestClient, RestClientHandle, RestClientResult};
+use std::fmt::Debug;
 use timeline_client::TimelineClient;
 
 mod rest_client;
@@ -23,7 +18,7 @@ mod timeline_client;
 ///
 /// - `config` is the weather data configuration.
 ///
-pub fn get(config: &Config) -> Result<Box<dyn HistoryClient>> {
+pub fn create_history_client(config: &Config) -> Result<Box<dyn HistoryClient>> {
     // currently there is only 1 client so just create it.
     match TimelineClient::new(config) {
         Ok(history_client) => Ok(Box::new(history_client)),

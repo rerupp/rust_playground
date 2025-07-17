@@ -3,9 +3,7 @@
 use super::*;
 use chrono::prelude::{NaiveDate, NaiveDateTime};
 use std::path::PathBuf;
-use weather_lib::prelude::{
-    DailyHistories, DataCriteria, DateRange, History, HistoryDates, HistorySummaries, Location, LocationCriteria,
-};
+use weather_lib::prelude::{DailyHistories, DateRange, History, HistoryDates, HistorySummaries, Location, LocationCriteria, LocationFilter, LocationFilters};
 
 #[derive(Clone, Debug, Default)]
 #[pyclass(name = "WeatherConfig", get_all, set_all)]
@@ -27,15 +25,9 @@ impl PyWeatherConfig {
         logfile: Option<PathBuf>,
         log_append: bool,
         log_level: usize,
-        fs_only: bool) -> Self {
-        Self {
-            config_file,
-            dirname,
-            logfile,
-            log_append,
-            log_level,
-            fs_only,
-        }
+        fs_only: bool,
+    ) -> Self {
+        Self { config_file, dirname, logfile, log_append, log_level, fs_only }
     }
 }
 
@@ -43,6 +35,12 @@ impl PyWeatherConfig {
 #[derive(Clone, Debug, Default)]
 #[pyclass(name = "Location", get_all, set_all)]
 pub struct PyLocation {
+    /// The location city name.
+    pub city: String,
+    /// The locations full state name.
+    pub state: String,
+    /// The locations two-letter abbreviation.
+    pub state_id: String,
     /// The name of a location.
     pub name: String,
     /// A unique nickname of a location.
@@ -62,6 +60,9 @@ impl From<&Location> for PyLocation {
 impl From<Location> for PyLocation {
     fn from(location: Location) -> Self {
         Self {
+            city: location.city,
+            state: location.state,
+            state_id: location.state_id,
             name: location.name,
             alias: location.alias,
             longitude: location.longitude,
@@ -73,6 +74,9 @@ impl From<Location> for PyLocation {
 impl From<PyLocation> for Location {
     fn from(location: PyLocation) -> Self {
         Self {
+            city: location.city,
+            state: location.state,
+            state_id: location.state_id,
             name: location.name,
             alias: location.alias,
             longitude: location.longitude,
@@ -84,23 +88,47 @@ impl From<PyLocation> for Location {
 #[pymethods]
 impl PyLocation {
     #[new]
-    #[pyo3(signature = (name=None, alias=None, latitude=None, longitude=None, tz=None))]
-    fn new(name: Option<String>, alias: Option<String>, latitude: Option<String>, longitude: Option<String>,
-           tz: Option<String>) -> Self {
+    #[pyo3(signature = (city=None, state=None, state_id=None, alias=None, latitude=None, longitude=None, tz=None))]
+    fn new(
+        city: Option<String>,
+        state: Option<String>,
+        state_id: Option<String>,
+        alias: Option<String>,
+        latitude: Option<String>,
+        longitude: Option<String>,
+        tz: Option<String>,
+    ) -> Self {
+        let city = city.unwrap_or(Default::default()).trim().to_string();
+        let state_id = state_id.unwrap_or(Default::default()).trim().to_string();
+        let name = if city.is_empty() && state_id.is_empty() {
+            Default::default()
+        } else {
+            format!("{city}, {state_id}")
+        };
         Self {
-            name: name.unwrap_or(Default::default()),
+            city,
+            state: state.unwrap_or(Default::default()).trim().to_string(),
+            state_id,
+            name,
             alias: alias.unwrap_or(Default::default()),
-            latitude: latitude.unwrap_or(Default::default()),
-            longitude: longitude.unwrap_or(Default::default()),
-            tz: tz.unwrap_or(Default::default()),
+            latitude: latitude.unwrap_or(Default::default()).trim().to_string(),
+            longitude: longitude.unwrap_or(Default::default()).trim().to_string(),
+            tz: tz.unwrap_or(Default::default()).trim().to_string(),
         }
     }
     fn __str__(&self) -> String {
         format!("{:?}", self)
     }
     fn __copy__(&self) -> PyLocation {
-        PyLocation::new(Some(self.name.clone()), Some(self.alias.clone()), Some(self.latitude.clone()),
-                        Some(self.longitude.clone()), Some(self.tz.clone()))
+        PyLocation::new(
+            Some(self.city.clone()),
+            Some(self.state.clone()),
+            Some(self.state_id.clone()),
+            Some(self.alias.clone()),
+            Some(self.latitude.clone()),
+            Some(self.longitude.clone()),
+            Some(self.tz.clone()),
+        )
     }
 }
 
@@ -258,43 +286,43 @@ impl PyDailyHistories {
         str.join("\n")
     }
 }
-
-/// Used by front-ends to identify locations.
-#[derive(Clone, Debug)]
-#[pyclass(name = "DataCriteria", get_all, set_all)]
-pub struct PyDataCriteria {
-    /// The locations of interest.
-    pub filters: Vec<String>,
-    /// If `true` the location filters will ignore case.
-    pub icase: bool,
-    /// If `true` locations will be sorted by name.
-    pub sort: bool,
-}
-impl Default for PyDataCriteria {
-    fn default() -> Self {
-        Self { filters: Default::default(), icase: true, sort: true }
-    }
-}
-impl From<PyDataCriteria> for DataCriteria {
-    fn from(data_criteria: PyDataCriteria) -> Self {
-        Self { filters: data_criteria.filters, icase: data_criteria.icase, sort: data_criteria.sort }
-    }
-}
-#[pymethods]
-impl PyDataCriteria {
-    #[new]
-    #[pyo3(signature = (filters=None, icase=true, sort=true))]
-    fn new(filters: Option<Vec<String>>, icase: Option<bool>, sort: Option<bool>) -> Self {
-        PyDataCriteria {
-            filters: filters.unwrap_or(Default::default()),
-            icase: icase.unwrap_or(true),
-            sort: sort.unwrap_or(true),
-        }
-    }
-    fn __str__(&self) -> String {
-        format!("{:?}", self)
-    }
-}
+//
+// /// Used by front-ends to identify locations.
+// #[derive(Clone, Debug)]
+// #[pyclass(name = "DataCriteria", get_all, set_all)]
+// pub struct PyDataCriteria {
+//     /// The locations of interest.
+//     pub filters: Vec<String>,
+//     /// If `true` the location filters will ignore case.
+//     pub icase: bool,
+//     /// If `true` locations will be sorted by name.
+//     pub sort: bool,
+// }
+// impl Default for PyDataCriteria {
+//     fn default() -> Self {
+//         Self { filters: Default::default(), icase: true, sort: true }
+//     }
+// }
+// impl From<PyDataCriteria> for DataCriteria {
+//     fn from(data_criteria: PyDataCriteria) -> Self {
+//         Self { filters: data_criteria.filters, icase: data_criteria.icase, sort: data_criteria.sort }
+//     }
+// }
+// #[pymethods]
+// impl PyDataCriteria {
+//     #[new]
+//     #[pyo3(signature = (filters=None, icase=true, sort=true))]
+//     fn new(filters: Option<Vec<String>>, icase: Option<bool>, sort: Option<bool>) -> Self {
+//         PyDataCriteria {
+//             filters: filters.unwrap_or(Default::default()),
+//             icase: icase.unwrap_or(true),
+//             sort: sort.unwrap_or(true),
+//         }
+//     }
+//     fn __str__(&self) -> String {
+//         format!("{:?}", self)
+//     }
+// }
 
 /// The container for a range of dates.
 #[derive(Clone, Debug)]
@@ -391,33 +419,96 @@ impl PyHistorySummaries {
     }
 }
 
+/// The data structure used to get locations..
+///
+#[derive(Clone, Debug, Default)]
+#[pyclass(name = "LocationFilter", get_all, set_all)]
+pub struct PyLocationFilter {
+    /// A location can be searched by the city name.
+    pub city: Option<String>,
+
+    /// A location can be searched by the state name (full or two-letter form).
+    pub state: Option<String>,
+
+    /// A location can be searched for by its name or alias.
+    pub name: Option<String>,
+}
+impl From<PyLocationFilter> for LocationFilter {
+    fn from(py_filter: PyLocationFilter) -> Self {
+        LocationFilter { city: py_filter.city, state: py_filter.state, name: py_filter.name }
+    }
+}
+#[pymethods]
+impl PyLocationFilter {
+    #[new]
+    #[pyo3(signature = (city=None, state=None, name=None))]
+    pub fn new(city: Option<String>, state: Option<String>, name: Option<String>) -> Self {
+        Self { city, state, name }
+    }
+    fn ___str__(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
+/// The collection of filters used to select locations.
+///
+#[derive(Clone, Debug, Default)]
+#[pyclass(name = "LocationFilters", get_all, set_all)]
+pub struct PyLocationFilters {
+    pub filters: Vec<PyLocationFilter>,
+}
+impl From<PyLocationFilters> for LocationFilters {
+    fn from(py_filters: PyLocationFilters) -> Self {
+        let filters = py_filters.filters.into_iter().map(Into::into).collect();
+        LocationFilters::new(filters)
+    }
+}
+#[pymethods]
+impl PyLocationFilters {
+    #[new]
+    #[pyo3(signature = (filters=vec![]))]
+    pub fn new(filters: Vec<PyLocationFilter>) -> Self {
+        Self { filters }
+    }
+    fn ___str__(&self) -> String {
+        format!("{:?}", self)
+    }
+}
+
 /// The search criteria for locations.
 #[derive(Clone, Debug, Default)]
 #[pyclass(name = "LocationCriteria", get_all, set_all)]
 pub struct PyLocationCriteria {
     /// The optional city name.
-    pub name: Option<String>,
+    pub city: Option<String>,
     /// The optional state name.
     pub state: Option<String>,
+    /// The optional location name.
+    pub name: Option<String>,
     /// Used to limit the result of the query.
     pub limit: usize,
 }
 impl From<PyLocationCriteria> for LocationCriteria {
     fn from(location_criteria: PyLocationCriteria) -> Self {
-        Self { name: location_criteria.name, state: location_criteria.state, limit: location_criteria.limit }
+        let mut filter = LocationFilter::default();
+        if let Some(city) = &location_criteria.city {
+            filter = filter.with_city(city);
+        }
+        if let Some(state) = &location_criteria.state {
+            filter = filter.with_state(state);
+        }
+        if let Some(name) = &location_criteria.name {
+            filter = filter.with_name(name);
+        }
+        Self { filter, limit: location_criteria.limit }
     }
 }
-
 #[pymethods]
 impl PyLocationCriteria {
     #[new]
-    #[pyo3(signature = (name=None, state=None, limit=25))]
-    fn new(name: Option<String>, state: Option<String>, limit: Option<usize>) -> Self {
-        Self {
-            name,
-            state,
-            limit: limit.unwrap_or(25),
-        }
+    #[pyo3(signature = (city=None, state=None, name=None, limit=25))]
+    fn new(city: Option<String>, state: Option<String>, name: Option<String>, limit: Option<usize>) -> Self {
+        Self { city, name, state, limit: limit.unwrap_or(25) }
     }
     fn __str__(&self) -> String {
         format!("{:?}", self)

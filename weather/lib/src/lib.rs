@@ -63,8 +63,8 @@ impl From<&str> for Error {
     }
 }
 
-pub use weather_data::create_weather_data;
 mod weather_data;
+pub use weather_data::create_weather_data;
 
 mod backend;
 
@@ -75,12 +75,13 @@ mod history_client;
 /// The public data structures.
 pub mod prelude {
     pub use crate::{
-        weather_data::WeatherData,
         entities::{
-            DailyHistories, DataCriteria, DateRange, DateRanges, History, HistoryDates, HistorySummaries,
-            HistorySummary, Location, LocationCriteria,
+            DailyHistories, DateRange, DateRanges, History, HistoryDates, HistorySummaries, HistorySummary, Location,
+            LocationCriteria, LocationFilter, LocationFilters,
         },
         history_client::HistoryClient,
+        location_filter, location_filters,
+        weather_data::{create_weather_data, WeatherData},
     };
 }
 
@@ -89,7 +90,6 @@ mod admin;
 /// The public administration data structures.
 pub mod admin_prelude {
     pub use crate::admin::{
-        entities::{Components, DbDetails, FilesysDetails, LocationDetails, UsCitiesInfo},
-        weather_admin, WeatherAdmin,
+        create_weather_admin, Components, DbDetails, FilesysDetails, LocationDetails, UsCityDetails, WeatherAdmin,
     };
 }

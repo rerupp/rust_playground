@@ -7,7 +7,8 @@ from .graph_view import GraphView
 from .graphs import Graphs
 from ..infrastructure import Stopwatch, WeatherView
 from ...config import get_logger
-from ...domain import DailyHistories, DataCriteria, DateRange, Location, LocationHistoryDates, WeatherData
+from ...domain import DailyHistories, LocationFilter, LocationFilters, DateRange, Location, LocationHistoryDates, \
+    WeatherData
 
 __all__ = ['HistoryGraph']
 log = get_logger(__name__)
@@ -55,7 +56,7 @@ class HistoryGraph(WeatherView):
     def view(self) -> tk.Frame:
         return self._graph_view
 
-    def _get_locations_history_dates(self, locations: List[Location]) -> List[LocationHistoryDates]:
+    def _get_locations_history_dates(self, locations: List[Location]) -> List[LocationHistoryDates] | None:
         """
         Get the location history dates for the locations.
         """
@@ -64,8 +65,8 @@ class HistoryGraph(WeatherView):
             sw = Stopwatch()
             locations_without_histories = []
             locations_history_dates = []
-            filters = [l.alias for l in locations] if locations else None
-            for location_history_dates in self._weather_data.get_history_dates(DataCriteria(filters)):
+            filters = [LocationFilter(name=l.alias) for l in locations] if locations else None
+            for location_history_dates in self._weather_data.get_history_dates(LocationFilters(filters)):
                 if location_history_dates.history_dates:
                     locations_history_dates.append(location_history_dates)
                 else:
@@ -93,9 +94,9 @@ class HistoryGraph(WeatherView):
             return locations_history_dates
 
         except SystemError as err:
-            HistoryGraph._error('There was an error getting the locations history dates', err)
+            return HistoryGraph._error('There was an error getting the locations history dates', err)
 
-    def _get_locations_daily_history(self) -> List[DailyHistories]:
+    def _get_locations_daily_history(self) -> List[DailyHistories] | None:
         """
         Get the daily histories for each of the locations.
         """
@@ -104,7 +105,7 @@ class HistoryGraph(WeatherView):
             locations_daily_histories = []
             date_range = self._graph_selection.date_range
             for location_history_dates in self._locations_history_dates:
-                data_criteria = DataCriteria(filters=[location_history_dates.location.alias])
+                data_criteria = LocationFilter(name=location_history_dates.location.alias)
                 locations_daily_histories.append(self._weather_data.get_daily_history(data_criteria, date_range))
 
             # make sure the primary location daily histories is first
@@ -115,7 +116,7 @@ class HistoryGraph(WeatherView):
             log.info('_get_locations_daily_history %s', elapsed)
             return locations_daily_histories
         except SystemError as err:
-            HistoryGraph._error('There was an error getting the locations daily histories', err)
+            return HistoryGraph._error('There was an error getting the locations daily histories', err)
 
     def _select_graph(self):
         """

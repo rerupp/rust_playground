@@ -1,14 +1,15 @@
 //! The weather data user CLI commands.
-use super::*;
+use crate::cli;
 use chrono::NaiveDate;
-use std::io::Write;
-use weather_lib::prelude::*;
+use clap::{ArgMatches, Command};
+use weather_lib::prelude::WeatherData;
 
 mod add_history;
 mod list_history;
 mod list_locations;
 mod list_summary;
 mod report_history;
+mod query_cities;
 
 #[derive(Debug)]
 pub struct User;
@@ -21,6 +22,7 @@ impl User {
             list_summary::command(),
             report_history::command(),
             add_history::command(),
+            query_cities::command(),
         ]
     }
     /// Run the associated command.
@@ -30,13 +32,14 @@ impl User {
     /// - `weather_data` is the weather history API that will be used.
     /// - `name` identifies the command that will be run.
     /// - `args` holds the associated command arguments.
-    pub fn run(weather_data: &WeatherData, name: &str, args: ArgMatches) -> Result<()> {
+    pub fn run(weather_data: &WeatherData, name: &str, args: ArgMatches) -> cli::Result<()> {
         match name {
             list_locations::COMMAND_NAME => list_locations::execute(weather_data, args),
             list_history::COMMAND_NAME => list_history::execute(weather_data, args),
             list_summary::COMMAND_NAME => list_summary::execute(weather_data, args),
             report_history::COMMAND_NAME => report_history::execute(weather_data, args),
             add_history::COMMAND_NAME => add_history::execute(weather_data, args),
+            query_cities::COMMAND_NAME => query_cities::execute(weather_data, args),
             _ => unreachable!("User command should not be here..."),
         }
     }
@@ -47,7 +50,7 @@ impl User {
 /// # Arguments
 ///
 /// * `name` is the command line argument that should be a location name.
-fn validate_location(name: &str) -> std::result::Result<String, String> {
+fn validate_location(name: &str) -> Result<String, String> {
     match toolslib::date_time::parse_date(name) {
         Ok(_) => Err("The location name is a date.".to_string()),
         Err(_) => Ok(name.to_string()),
@@ -59,7 +62,7 @@ fn validate_location(name: &str) -> std::result::Result<String, String> {
 /// # Arguments
 ///
 /// * `date` is the argument that will be parsed.
-fn date_parser(date: &str) -> std::result::Result<NaiveDate, String> {
+fn date_parser(date: &str) -> Result<NaiveDate, String> {
     match toolslib::date_time::parse_date(date) {
         Ok(date) => Ok(date),
         Err(err) => Err(err.to_string()),

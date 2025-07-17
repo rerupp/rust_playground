@@ -1,7 +1,19 @@
 //! The US Cities search UI.
 
-use super::*;
-use reports::list_locations as reports;
+use super::{add_location::AddLocation, alpha, alphanumeric, digits};
+use crate::cli::reports::list_locations as reports;
+use crossterm::event::KeyEvent;
+use ratatui::{
+    buffer::Buffer,
+    layout::{Position, Rect, Size},
+};
+use std::{ops::ControlFlow, rc::Rc};
+use termui_lib::prelude::{
+    beep, break_event, log_key_pressed, log_render, ok_button, ActiveNormalStyles, Button, ButtonBar, ButtonDialog,
+    Control, ControlGroup, ControlResult, ControlState, DialogResult, DialogWindow, EditControl, EditField,
+    EditFieldGroup, Label, MessageStyle, ReportView, TextEditor,
+};
+use weather_lib::prelude::{Location, LocationCriteria, LocationFilter, WeatherData};
 
 /// The add location identifier.
 ///
@@ -27,10 +39,10 @@ pub struct LocationSearch {
     /// The weather data API that will be used.
     weather_data: Rc<WeatherData>,
 }
-impl Debug for LocationSearch {
+impl std::fmt::Debug for LocationSearch {
     /// Debug needs to be implemented because of the weather data API.
     ///
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocationSearch")
             .field("dialog", &self.dialog)
             .field("criteria", &self.criteria)
@@ -272,9 +284,13 @@ mod criteria {
     ///
     const NAME_ID: &'static str = "NAME";
 
-    /// The state edit field identifier.
+    /// The full state edit field identifier.
     ///
-    const STATE_ID: &'static str = "STATE";
+    const CITY_ID: &'static str = "CITY";
+
+    /// The two-letter state edit field identifier.
+    ///
+    const STATE_ID: &'static str = "STATE_ID";
 
     /// The limit edit field identifier.
     ///
@@ -371,11 +387,16 @@ mod criteria {
                         TextEditor::default().with_valid_chars(alphanumeric().chain("_-., *".chars())).with_width(25),
                     ),
                     EditField::new(
+                        Label::align_right("City: ").with_selector('C').with_id(CITY_ID),
+                        TextEditor::default()
+                            .with_valid_chars(alpha().chain(" *".chars()))
+                            .with_width(25),
+                    ),
+                    EditField::new(
                         Label::align_right("State: ").with_selector('S').with_id(STATE_ID),
                         TextEditor::default()
-                            .with_valid_chars(alpha().chain("*".chars()))
-                            .with_uppercase_only()
-                            .with_width(2),
+                            .with_valid_chars(alpha().chain(" *".chars()))
+                            .with_width(25),
                     ),
                     EditField::new(
                         Label::align_right("Limit: ").with_selector('L').with_id(LIMIT_ID),
@@ -387,14 +408,26 @@ mod criteria {
         /// Transform the edit fields into [criteria](LocationCriteria) that can be used by a location search.
         ///
         fn as_location_criteria(&self) -> LocationCriteria {
-            let name = self.fields.get(NAME_ID).unwrap().text();
-            let state = self.fields.get(STATE_ID).unwrap().text();
-            let limit = self.fields.get(LIMIT_ID).unwrap().text();
-            LocationCriteria {
-                name: if name.is_empty() { None } else { Some(name.to_string()) },
-                state: if state.is_empty() { None } else { Some(state.to_string()) },
-                limit: limit.parse().unwrap_or(25),
+            let mut filter = LocationFilter::default();
+
+            let city = self.fields.get(CITY_ID).unwrap().text();
+            if !city.is_empty() {
+                filter = filter.with_city(city);
             }
+
+            let state = self.fields.get(STATE_ID).unwrap().text();
+            if !state.is_empty() {
+                filter = filter.with_state(state);
+            }
+
+            let name = self.fields.get(NAME_ID).unwrap().text();
+            if !name.is_empty() {
+                filter = filter.with_name(name);
+            }
+
+            let limit = self.fields.get(LIMIT_ID).unwrap().text().parse().unwrap_or(25);
+
+            LocationCriteria { filter, limit }
         }
     }
     impl DialogWindow for CriteriaWindow {

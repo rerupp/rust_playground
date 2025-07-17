@@ -16,12 +16,12 @@ activates both features.
 ```cargo build --features log_key_event,log_render```
 
 ### The `log_key_event` macro.
-This macro typicall sits at the top of a `key_pressed()` method. When the method is called a *key 
+This macro typically sits at the top of a `key_pressed()` method. When the method is called a *key 
 pressed* `DEBUG` message is written to the log file. When the method exits a `DEBUG` message 
 with the elapsed execution time is written to the log file.
 
 ### The `log_render` macro.
-This macro typicall sits at the top of a `render()` method. When the method is called a *render* 
+This macro typically sits at the top of a `render()` method. When the method is called a *render* 
 `DEBUG` message is written to the log file. When the method exits a `DEBUG` message with the 
 elapsed execution time is written to the log file.
 
@@ -71,7 +71,7 @@ styling will be externalized and customizable. That's not the state today, it is
 but the infrastructure is mostly there.
 
 - The `bootstrap` module provides the hardcoded styling defaults.
-- The `persistence` module provides the persisten data objects (PDO) that can be used to 
+- The `persistence` module provides the persistent data objects (PDO) that can be used to 
   serialize and deserialize the style catalogs.
 - The `store` module provides the runtime accessible style catalogs. The runtime is currently a 
   singleton built on top of `OnceLock`.

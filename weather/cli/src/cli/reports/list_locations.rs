@@ -1,7 +1,9 @@
 //! The weather data location reports
 use weather_lib::prelude::Location;
 
-use super::*;
+use super::{csv_to_string, csv_write_record, json_to_string, text_title_separator};
+use serde_json::{json, Value};
+use toolslib::{header, layout, report::ReportSheet};
 
 pub mod text {
     /// The list locations_win text based reporting implementation.
@@ -59,12 +61,12 @@ pub mod text {
             }
             locations.into_iter().for_each(|location| {
                 let mut content = vec![];
-                content.push(text!(location.name.as_str()));
+                content.push(toolslib::text!(location.name.as_str()));
                 if !self.skip_alias {
-                    content.push(text!(location.alias.as_str()))
+                    content.push(toolslib::text!(location.alias.as_str()))
                 }
-                content.push(text!(format!("{:>ll_width$}/{:<ll_width$}", &location.latitude, &location.longitude)));
-                content.push(text!(location.tz.as_str()));
+                content.push(toolslib::text!(format!("{:>ll_width$}/{:<ll_width$}", &location.latitude, &location.longitude)));
+                content.push(toolslib::text!(location.tz.as_str()));
                 report.add_row(content);
             });
             report
@@ -76,6 +78,7 @@ pub mod csv {
     /// The list locations_win CSV based reporting implementation.
     ///
     use super::*;
+    extern crate csv as csv_lib;
 
     #[derive(Debug, Default)]
     pub struct Report;

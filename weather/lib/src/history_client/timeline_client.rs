@@ -1,7 +1,17 @@
 //! The Visual Crossing weather data services client.
-use super::*;
+use super::{rest_client::{RestClient, RestClientHandle, RestClientResult}, HistoryClient};
+use crate::{
+    backend::Config,
+    prelude::{DailyHistories, DateRange, History, Location},
+    Error, Result
+};
 use chrono::DateTime;
-use entities::History;
+use reqwest::{
+    // use the blocking API since the rest client is async.
+    blocking::{Client, Request},
+    StatusCode,
+    Url,
+};
 use serde::Deserialize;
 
 pub use timeline_client::TimelineClient;
@@ -311,14 +321,7 @@ mod timeline_response {
         ///
         pub fn into_daily_histories(self, location: &Location) -> DailyHistories {
             DailyHistories {
-                // currently this is the only place you need to clone the location
-                location: Location {
-                    name: location.name.clone(),
-                    alias: location.alias.clone(),
-                    longitude: location.longitude.clone(),
-                    latitude: location.latitude.clone(),
-                    tz: location.tz.clone(),
-                },
+                location: location.clone(),
                 histories: self
                     .days
                     .into_iter()
@@ -337,6 +340,9 @@ mod timeline_response {
         fn daily_histories() {
             let response = include_str!("response.json");
             let location = Location {
+                city: "city".to_string(),
+                state_id: "abrev_state".to_string(),
+                state: "state".to_string(),
                 name: "name".to_string(),
                 alias: "alias".to_string(),
                 longitude: "-111".to_string(),

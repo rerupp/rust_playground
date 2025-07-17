@@ -105,7 +105,7 @@ impl DateEditor {
                 chars[self.column] = ch;
                 self.text = chars.into_iter().collect();
                 // ignore the result of moving right
-                self.move_right();
+                let _ = self.move_right();
                 break_event!(ControlResult::Continue)
             }
         }

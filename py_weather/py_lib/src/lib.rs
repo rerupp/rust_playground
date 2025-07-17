@@ -25,7 +25,8 @@ fn py_weather_lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<py_entities::PyLocationHistoryDates>()?;
     m.add_class::<py_entities::PyHistorySummaries>()?;
     m.add_class::<py_entities::PyLocationCriteria>()?;
-    m.add_class::<py_entities::PyDataCriteria>()?;
+    m.add_class::<py_entities::PyLocationFilter>()?;
+    m.add_class::<py_entities::PyLocationFilters>()?;
     m.add_function(wrap_pyfunction!(py_weather_data::create, m)?)?;
     m.add_class::<py_weather_data::PyWeatherData>()?;
     m.add_class::<py_history_client::PyHistoryClient>()?;

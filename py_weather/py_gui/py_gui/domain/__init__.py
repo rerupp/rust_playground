@@ -1,5 +1,5 @@
-from .weather_data import (WeatherData, DailyHistories, DataCriteria, DateRange, HistoryClient, LocationHistoryDates,
-                           HistorySummaries, Location, LocationCriteria)
+from .weather_data import (WeatherData, DailyHistories, DateRange, HistoryClient, LocationHistoryDates,
+                           HistorySummaries, Location, LocationCriteria, LocationFilter, LocationFilters)
 
 
 class WeatherConfigException(Exception):
@@ -10,5 +10,6 @@ class WeatherConfigException(Exception):
         '\n'.join(self.__notes__)
 
 
-__all__ = ['WeatherData', 'WeatherConfigException', 'DailyHistories', 'DataCriteria', 'DateRange', 'HistoryClient',
-           'LocationHistoryDates', 'HistorySummaries', 'Location', 'LocationCriteria']
+__all__ = ['WeatherData', 'WeatherConfigException', 'DailyHistories', 'DateRange', 'HistoryClient',
+           'LocationHistoryDates', 'HistorySummaries', 'Location', 'LocationCriteria', 'LocationFilter',
+           'LocationFilters']

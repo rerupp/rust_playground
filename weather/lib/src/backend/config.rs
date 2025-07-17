@@ -1,5 +1,5 @@
 //! Utilities to load application configurations from `TOML` files at runtime.
-use super::{Error, Result};
+use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     env,

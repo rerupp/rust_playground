@@ -10,4 +10,4 @@ weather.toml
 *.log
 *.lis
 *.txt
-**/uscities.csv
+#**/uscities.csv

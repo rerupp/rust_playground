@@ -9,7 +9,7 @@ from .history_report import HistoryReport
 from .infrastructure import Stopwatch, WeatherEvent, WeatherView
 from .widgets import LocationsView
 from ..config import get_logger
-from ..domain import DataCriteria, Location, WeatherData
+from ..domain import LocationFilters, Location, WeatherData
 
 __all__ = ['Locations']
 log = get_logger(__name__)
@@ -50,7 +50,7 @@ class Locations(WeatherView):
         log.debug(f'{self.__class__.__name__} refresh')
         try:
             sw = Stopwatch()
-            self._locations = self._weather_data.get_locations(DataCriteria())
+            self._locations = self._weather_data.get_locations(LocationFilters())
             self._view.refresh(self._locations)
             log.debug('refresh %s', sw)
         except SystemError as error:

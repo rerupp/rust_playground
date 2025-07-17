@@ -1,6 +1,14 @@
 //! The summary tab window.
 
-use super::*;
+use crate::cli::{self, reports::list_summary as reports};
+use crossterm::event::KeyEvent;
+use ratatui::{
+    buffer::Buffer,
+    layout::{Position, Rect, Size},
+};
+use std::{ops::ControlFlow, rc::Rc};
+use termui_lib::prelude::*;
+use weather_lib::{location_filters, prelude::WeatherData};
 
 /// The main tab window showing a summary of the locations history data.
 ///
@@ -12,9 +20,9 @@ pub struct SummaryWindow {
     /// The weather data history API that will be used.
     weather_data: Rc<WeatherData>,
 }
-impl Debug for SummaryWindow {
+impl std::fmt::Debug for SummaryWindow {
     /// Show all the attributes except the weather data API.
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SummaryWindow").field("active", &self.active).field("report_view", &self.report).finish()
     }
 }
@@ -25,7 +33,7 @@ impl SummaryWindow {
     ///
     /// - `weather_data` is the weather history API that will be used.
     ///
-    pub fn new(weather_data: Rc<WeatherData>) -> Result<Self> {
+    pub fn new(weather_data: Rc<WeatherData>) -> cli::Result<Self> {
         let mut fles = Self { active: false, report: None, weather_data };
         fles.refresh()?;
         Ok(fles)
@@ -37,6 +45,7 @@ impl DialogWindow for SummaryWindow {
     fn is_active(&self) -> bool {
         self.active
     }
+
     /// Control if the tab window is active or not.
     ///
     /// # Arguments
@@ -46,19 +55,21 @@ impl DialogWindow for SummaryWindow {
     fn set_active(&mut self, yes_no: bool) {
         self.active = yes_no;
     }
+
     /// Force the tab to recreate the location summary report view.
     ///
-    fn refresh(&mut self) -> std::result::Result<(), String> {
+    fn refresh(&mut self) -> Result<(), String> {
         self.report.take();
-        match self.weather_data.get_history_summary(DataCriteria::default()) {
+        match self.weather_data.get_history_summary(location_filters!()) {
             Ok(history_summaries) => {
-                let report = reports::list_summary::text::Report::default().generate(history_summaries);
+                let report = reports::text::Report::default().generate(history_summaries);
                 self.report.replace(ReportView::new(report, None).with_show_selected(true));
                 Ok(())
             }
             Err(err) => Err(format!("Summary error ({})", err)),
         }
     }
+
     /// Get the size of the tab window.
     ///
     fn size(&self) -> Size {
@@ -88,6 +99,7 @@ impl DialogWindow for SummaryWindow {
         }
         ControlFlow::Continue(())
     }
+
     /// Draw the tab window on the terminal screen and optionally return the current cursor position.
     ///
     /// # Arguments

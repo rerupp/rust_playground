@@ -1,20 +1,6 @@
 //! The Terminal based weather UI.
 
-use super::*;
 use chrono::NaiveDate;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{
-    layout::{Position, Size},
-    prelude::*,
-};
-use std::{
-    cmp,
-    fmt::{Debug, Formatter},
-    ops::ControlFlow,
-    rc::Rc,
-};
-use termui_lib::prelude::*;
-use weather_lib::prelude::{DataCriteria, Location, LocationCriteria, WeatherData};
 
 pub use app::run as weather_ui;
 mod app;
@@ -44,7 +30,7 @@ fn alphanumeric() -> impl Iterator<Item = char> {
 
 /// Validate a date string represents a valid date.
 ///
-fn validate_date(name: &str, date_str: &str) -> std::result::Result<NaiveDate, String> {
+fn validate_date(name: &str, date_str: &str) -> Result<NaiveDate, String> {
     // let date = field.text();
     match date_str.chars().any(|ch| ch.is_whitespace()) {
         true => Err(format!("{} date contains whitespace.", name)),

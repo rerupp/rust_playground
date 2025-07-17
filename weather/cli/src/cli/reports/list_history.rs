@@ -1,5 +1,8 @@
 //! Generates the weather data location histories report.
-use super::*;
+//! 
+use super::{csv_to_string, csv_write_record, json_to_string, text_title_separator};
+use serde_json::{json, Value};
+use toolslib::{header, layout, report::ReportSheet};
 use weather_lib::prelude::HistoryDates;
 
 pub mod text {
@@ -43,7 +46,7 @@ pub mod text {
                 Err(_) => {
                     // right now formats are all hard coded so it's a dev problem
                     debug_assert!(false, "Bad date format '{}'!!!", date_format);
-                },
+                }
             }
             self
         }
@@ -62,7 +65,7 @@ pub mod text {
             for histories in locations_history_dates {
                 if histories.history_dates.is_empty() {
                     // report.text(rptrow!(location_history_dates.location.name));
-                    report.add_row(vec![text!(histories.location.name), text!("None")]);
+                    report.add_row(vec![toolslib::text!(histories.location.name), toolslib::text!("None")]);
                 } else {
                     let date_format = match &self.date_format {
                         None => "%Y-%m-%d",
@@ -81,10 +84,13 @@ pub mod text {
                         };
                     }
                     let history_dates = histories.history_dates;
-                    report.add_row(vec![text!(histories.location.name), text!(to_strings!(history_dates[0]))]);
-                    history_dates[1..]
-                        .into_iter()
-                        .for_each(|date_range| report.add_row(vec![text!(""), text!(to_strings!(date_range))]))
+                    report.add_row(vec![
+                        toolslib::text!(histories.location.name),
+                        toolslib::text!(to_strings!(history_dates[0])),
+                    ]);
+                    history_dates[1..].into_iter().for_each(|date_range| {
+                        report.add_row(vec![toolslib::text!(""), toolslib::text!(to_strings!(date_range))])
+                    })
                 }
             }
             report
@@ -96,6 +102,7 @@ pub mod csv {
     //! The list history CSV based reporting implementation.
     //!
     use super::*;
+    extern crate csv as csv_lib;
 
     #[derive(Default, Debug)]
     pub struct Report;
@@ -130,7 +137,7 @@ pub mod json {
     #[derive(Debug, Default)]
     pub struct Report(
         /// Controls if the report will be pretty printed or not.
-        bool
+        bool,
     );
     impl Report {
         /// Create a report instance and configure it to pretty print the `JSON` document.

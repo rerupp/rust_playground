@@ -62,10 +62,11 @@ pub enum Editor {
 }
 impl std::fmt::Display for Editor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Editor({})", match self {
+        let editor = match self {
             Editor::Date(_) => "Date",
-            Editor::Text(_) => "Text"
-        })
+            Editor::Text(_) => "Text",
+        };
+        write!(f, "Editor({editor})")
     }
 }
 impl From<DateEditor> for Editor {
@@ -272,10 +273,8 @@ impl EditFieldGroup {
     ///
     pub fn new(fields: Vec<EditField>) -> Self {
         debug_assert!(fields.len() > 0);
-        let size = Size {
-            width: fields.iter().map(|f| f.size().width).max().unwrap_or(0),
-            height: fields.len() as u16,
-        };
+        let size =
+            Size { width: fields.iter().map(|f| f.size().width).max().unwrap_or(0), height: fields.len() as u16 };
         Self {
             active: false,
             fields,
@@ -410,14 +409,24 @@ impl ControlGroup<EditField> for EditFieldGroup {
     fn key_pressed(&mut self, key_event: KeyEvent) -> ControlFlow<ControlResult> {
         log_key_pressed!("EditFieldGroup");
         match (key_event.modifiers, key_event.code) {
-            (KeyModifiers::NONE, KeyCode::Tab) => match next_control(as_mut_refs!(self.fields), self.wrap) {
-                true => break_event!(ControlResult::Continue)?,
-                false => break_event!(ControlResult::NextGroup)?,
-            },
-            (KeyModifiers::SHIFT, KeyCode::BackTab) => match previous_control(as_mut_refs!(self.fields), self.wrap) {
-                true => break_event!(ControlResult::Continue)?,
-                false => break_event!(ControlResult::PrevGroup)?,
-            },
+            (KeyModifiers::NONE, KeyCode::Tab | KeyCode::Down) => {
+                match next_control(as_mut_refs!(self.fields), self.wrap) {
+                    true => break_event!(ControlResult::Continue)?,
+                    false => break_event!(ControlResult::NextGroup)?,
+                }
+            }
+            (KeyModifiers::NONE, KeyCode::Up) => {
+                match previous_control(as_mut_refs!(self.fields), self.wrap) {
+                    true => break_event!(ControlResult::Continue)?,
+                    false => break_event!(ControlResult::PrevGroup)?,
+                }
+            }
+            (KeyModifiers::SHIFT, KeyCode::BackTab) => {
+                match previous_control(as_mut_refs!(self.fields), self.wrap) {
+                    true => break_event!(ControlResult::Continue)?,
+                    false => break_event!(ControlResult::PrevGroup)?,
+                }
+            }
             (KeyModifiers::ALT, KeyCode::Char(ch)) => match self.find_selector(ch) {
                 // continue and don't break to allow the ALT key to be seen by other controls
                 None => (),

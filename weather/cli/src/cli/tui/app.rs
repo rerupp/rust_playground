@@ -1,8 +1,17 @@
 //! The weather data UI.
-use super::*;
+use super::{dialogs, histories_win, locations_win, summary_win};
+use crate::cli;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
+use std::{ops::ControlFlow, rc::Rc};
+use termui_lib::prelude::{
+    break_event, log_key_pressed, log_render, Application, ApplicationResult, Console, DialogResult, DialogWindow,
+    MenuDialog, MenuItem, Menubar, MessageStyle, TabDialog, TabWindow,
+};
+use weather_lib::prelude::WeatherData;
 
 /// The UI runner.
-pub fn run(weather_data: WeatherData) -> Result<()> {
+pub fn run(weather_data: WeatherData) -> cli::Result<()> {
     let app = app::WeatherApp::new(weather_data);
     let mut console = Console::new()?;
     console.run(app)?;
@@ -48,10 +57,10 @@ mod app {
         /// The backend weather data API.
         weather_data: Rc<WeatherData>,
     }
-    impl Debug for WeatherApp {
+    impl std::fmt::Debug for WeatherApp {
         /// Show the contents bypassing the weather data API instance.
         ///
-        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             f.debug_struct("ConsoleApp")
                 .field("dialog", &self.dialog)
                 .field("add", &self.add)
@@ -92,6 +101,7 @@ mod app {
             self_.show_locations();
             self_
         }
+
         /// Add the [locations window](LocationsWindow) to the tab dialog.
         ///
         fn show_locations(&mut self) {
@@ -106,6 +116,7 @@ mod app {
                 },
             }
         }
+
         /// Add the [summary window](SummaryWindow) to the tab dialog.
         ///
         fn show_summary(&mut self) {
@@ -120,6 +131,7 @@ mod app {
                 },
             }
         }
+
         /// Add the [histories window](HistoriesWindow) to the tab dialog.
         ///
         fn show_histories(&mut self) {
@@ -134,6 +146,7 @@ mod app {
                 },
             }
         }
+
         /// Give the [menu dialog](Self::dialog) a chance to consume the event.
         /// [ControlFlow::Continue] will be returned if the event is not consumed.
         ///
@@ -233,6 +246,7 @@ mod app {
             }
             ControlFlow::Continue(())
         }
+
         /// Draw the application on the terminal screen.
         ///
         /// # Arguments

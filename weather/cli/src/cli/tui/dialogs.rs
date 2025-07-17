@@ -1,8 +1,10 @@
 //! The UI dialogs live in this module.
-pub use add_location::AddLocation;
-pub use location_search::LocationSearch;
 
-use super::*;
+// expose the tui function to dialogs
+use super::{alpha, alphanumeric, digits};
 
 mod add_location;
+pub use add_location::AddLocation;
+
 mod location_search;
+pub use location_search::LocationSearch;

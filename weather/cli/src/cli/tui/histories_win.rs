@@ -1,6 +1,16 @@
 //! The location histories summary window.
-use super::*;
-use reports::list_history::text::Report;
+use crate::cli::{self, reports::list_history as reports};
+use crossterm::event::KeyEvent;
+use ratatui::{
+    buffer::Buffer,
+    layout::{Position, Rect, Size},
+};
+use std::{ops::ControlFlow, rc::Rc};
+use termui_lib::prelude::{
+    beep, break_event, log_key_pressed, log_render, Control, ControlResult, ControlState, DialogResult, DialogWindow,
+    ReportView,
+};
+use weather_lib::{location_filters, prelude::WeatherData};
 
 /// The main tab window showing the location history dates that are available.
 ///
@@ -12,9 +22,9 @@ pub struct HistoriesWindow {
     /// The weather data history API that will be used.
     weather_data: Rc<WeatherData>,
 }
-impl Debug for HistoriesWindow {
+impl std::fmt::Debug for HistoriesWindow {
     /// Show all the attributes except the weather data API.
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SummaryWindow").field("active", &self.active).field("report", &self.report).finish()
     }
 }
@@ -25,7 +35,7 @@ impl HistoriesWindow {
     ///
     /// - `weather_data` is the weather history API that will be used.
     ///
-    pub fn new(weather_data: Rc<WeatherData>) -> Result<Self> {
+    pub fn new(weather_data: Rc<WeatherData>) -> cli::Result<Self> {
         let mut fles = Self { active: false, report: None, weather_data };
         fles.refresh()?;
         Ok(fles)
@@ -37,6 +47,7 @@ impl DialogWindow for HistoriesWindow {
     fn is_active(&self) -> bool {
         self.active
     }
+
     /// Control if the tab window is active or not.
     ///
     /// # Arguments
@@ -46,24 +57,27 @@ impl DialogWindow for HistoriesWindow {
     fn set_active(&mut self, yes_no: bool) {
         self.active = yes_no;
     }
+
     /// Force the tab to recreate the location history dates view.
     ///
-    fn refresh(&mut self) -> std::result::Result<(), String> {
+    fn refresh(&mut self) -> Result<(), String> {
         self.report.take();
-        match self.weather_data.get_history_dates(DataCriteria::default()) {
+        match self.weather_data.get_history_dates(location_filters![]) {
             Ok(history_dates) => {
-                let report = Report::default().with_date_format("%b-%d-%Y").generate(history_dates);
+                let report = reports::text::Report::default().with_date_format("%b-%d-%Y").generate(history_dates);
                 self.report.replace(ReportView::new(report, None).with_show_selected(true));
                 Ok(())
             }
             Err(err) => Err(format!("Histories error ({})", err)),
         }
     }
+
     /// Get the size of the tab window.
     ///
     fn size(&self) -> Size {
         self.report.as_ref().map_or(Size::default(), |report| report.size())
     }
+
     /// Dispatch a key pressed event to the tab window. [ControlFlow::Continue] will be returned if the
     /// event is not consumed.
     ///
@@ -91,6 +105,7 @@ impl DialogWindow for HistoriesWindow {
         }
         ControlFlow::Continue(())
     }
+
     /// Draw the tab window on the terminal screen and optionally return the current cursor position.
     ///
     /// # Arguments

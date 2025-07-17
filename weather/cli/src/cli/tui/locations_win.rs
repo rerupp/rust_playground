@@ -1,10 +1,21 @@
 //! The locations information window.
 
-use ratatui::layout::Position;
-
+use crate::cli::{self, reports::list_locations as reports};
 use add_history::AddHistory;
-
-use super::*;
+use crossterm::event::KeyEvent;
+use ratatui::{
+    buffer::Buffer,
+    layout::{Position, Rect, Size},
+};
+use std::{ops::ControlFlow, rc::Rc};
+use termui_lib::prelude::{
+    beep, break_event, log_key_pressed, log_render, Control, ControlResult, ControlState, DialogResult, DialogWindow,
+    ReportView,
+};
+use weather_lib::{
+    location_filters,
+    prelude::{Location, WeatherData},
+};
 
 mod add_history;
 mod context_menu;
@@ -44,9 +55,9 @@ pub struct LocationsWindow {
     /// The weather data API.
     weather_data: Rc<WeatherData>,
 }
-impl Debug for LocationsWindow {
+impl std::fmt::Debug for LocationsWindow {
     /// Show all the attributes except the weather data API.
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocationsWindow")
             .field("active", &self.active)
             .field("locations_view", &self.locations_view)
@@ -63,7 +74,7 @@ impl LocationsWindow {
     ///
     /// - `weather_data` is the weather history API that will be used.
     ///
-    pub fn new(weather_data: Rc<WeatherData>) -> Result<Self> {
+    pub fn new(weather_data: Rc<WeatherData>) -> cli::Result<Self> {
         let mut me = Self {
             active: false,
             locations_view: None,
@@ -75,6 +86,7 @@ impl LocationsWindow {
         me.refresh()?;
         Ok(me)
     }
+
     /// Dispatch a key pressed event to the popup menu. [ControlFlow::Continue] will be returned if the
     /// event is not consumed.
     ///
@@ -120,6 +132,7 @@ impl LocationsWindow {
         }
         ControlFlow::Continue(())
     }
+
     /// Dispatch a key pressed event to the add history dialog. [ControlFlow::Continue] will be returned if the
     /// event is not consumed.
     ///
@@ -133,7 +146,7 @@ impl LocationsWindow {
         match dialog.key_pressed(key_event) {
             ControlFlow::Break(DialogResult::Cancel) => {
                 break_event!(DialogResult::Poll(None))
-            },
+            }
             ControlFlow::Break(DialogResult::Exit) => {
                 // todo: you need to send back a refresh so the windows will be updated
                 break_event!(DialogResult::Poll(None))
@@ -154,9 +167,10 @@ impl LocationsWindow {
                 // since the dialog didn't consume the key it's still active
                 self.add_history.replace(dialog);
                 ControlFlow::Continue(())
-            },
+            }
         }
     }
+
     /// Dispatch a key pressed event to the tab window report view. [ControlFlow::Continue] will be returned if the
     /// event is not consumed.
     ///
@@ -181,6 +195,7 @@ impl DialogWindow for LocationsWindow {
     fn is_active(&self) -> bool {
         self.active
     }
+
     /// Control if the tab window is active or not.
     ///
     /// # Arguments
@@ -190,14 +205,15 @@ impl DialogWindow for LocationsWindow {
     fn set_active(&mut self, yes_no: bool) {
         self.active = yes_no;
     }
+
     /// Force the tab to recreate the locations view.
     ///
-    fn refresh(&mut self) -> std::result::Result<(), String> {
+    fn refresh(&mut self) -> Result<(), String> {
         // let the old locations_win and view go
         self.locations_view.take();
-        match self.weather_data.get_locations(DataCriteria::default()) {
+        match self.weather_data.get_locations(location_filters![]) {
             Ok(locations) => {
-                let report = reports::list_locations::text::Report::default().generate(&locations);
+                let report = reports::text::Report::default().generate(&locations);
                 let view = ReportView::new(report, None).with_show_selected(true).with_active(self.active);
                 self.locations_view.replace(LocationsView { locations, view });
                 Ok(())
@@ -205,6 +221,7 @@ impl DialogWindow for LocationsWindow {
             Err(err) => Err(format!("Locations error ({})", err))?,
         }
     }
+
     /// Get the size of the tab window.
     ///
     fn size(&self) -> Size {
@@ -243,6 +260,7 @@ impl DialogWindow for LocationsWindow {
         }
         ControlFlow::Continue(())
     }
+
     /// Draw the tab window and active dialogs on the terminal screen, optionally returning the current
     /// cursor position.
     ///

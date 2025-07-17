@@ -1,189 +1,108 @@
 //! The implementations of weather data.
 
-pub mod db;
-pub mod filesys;
+mod db;
+mod filesys;
 
 pub use config::Config;
+pub mod admin;
 mod config;
+mod data;
 
-use super::*;
-use crate::entities::{
-    DailyHistories, DataCriteria, DateRange, History, HistoryDates, HistorySummaries, Location, LocationCriteria,
+use crate::prelude::{
+    DailyHistories, DateRange, HistoryDates, HistorySummaries, Location, LocationCriteria, LocationFilters,
 };
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-impl From<rusqlite::Error> for Error {
-    /// Add support to convert rusqlite database errors.
-    fn from(err: rusqlite::Error) -> Self {
-        Error::from(format!("SQL: {}", err))
-    }
-}
-
-/// Get the backends implementation of weather data.
+/// Get the backend implementation of weather data.
 ///
 /// # Arguments
 ///
 /// * `config_file` is the weather data configuration filename.
 /// * `dirname` is the weather data directory name override.
-/// * `no_db` is used to force using the archive implementation of weather data.
-pub fn data_api(config_file: Option<PathBuf>, dirname: Option<PathBuf>, no_db: bool) -> Result<DataAPI> {
+/// * `no_db` forces the filesys backend to be used.
+///
+pub fn create(config_file: Option<PathBuf>, dirname: Option<PathBuf>, no_db: bool) -> crate::Result<Box<dyn Backend>> {
     let mut config = Config::new(config_file)?;
     if let Some(path) = dirname {
         config.weather_data.directory = path.display().to_string();
     }
     let weather_dir = filesys::WeatherDir::try_from(&config)?;
-    let data_adapter = if no_db || db::db_file(&weather_dir).is_none() {
-        filesys::data_adapter(config)
+    if no_db {
+        filesys::create_filesys_backend(config)
+    } else if db::is_available(&weather_dir) {
+        db::create_db_backend(config)
     } else {
-        db::data_adapter(config)
-    }?;
-    Ok(DataAPI(data_adapter))
+        filesys::create_filesys_backend(config)
+    }
 }
 
-pub struct DataAPI(Box<dyn DataAdapter>);
-/// The backend API for weather data.
-impl DataAPI {
+/// The weather data API for backend implementations.
+///
+pub(crate) trait Backend: Send {
     /// Get the weather data configuration.
     ///
-    pub fn get_config(&self) -> &Config {
-        &self.0.config()
-    }
+    fn get_config(&self) -> &Config;
+
     /// Add weather data history to a location.
     ///
     /// # Arguments
     ///
     /// - `daily_histories` contains the historical weather data that will be added.
     ///
-    pub fn add_daily_histories(&self, daily_histories: DailyHistories) -> Result<usize> {
-        self.0.add_daily_histories(&daily_histories)
-    }
+    // todo: should this return the dates added instead?
+    fn add_daily_histories(&self, daily_histories: DailyHistories) -> crate::Result<usize>;
+
     /// Get daily weather history for a location.
     ///
     /// It is an error if more than 1 location is found.
     ///
     /// # Arguments
     ///
-    /// - `criteria` identifies the location.
+    /// - `filters` identifies the location.
     /// - `history_range` covers the history dates returned.
     ///
-    pub fn get_daily_history(&self, criteria: DataCriteria, history_range: DateRange) -> Result<DailyHistories> {
-        let location = self.get_location(&criteria)?;
-        self.0.daily_histories(location, history_range)
-    }
+    // todo: change this to allow multiple locations or change to the location alias
+    fn get_daily_histories(&self, filters: LocationFilters, history_range: DateRange) -> crate::Result<DailyHistories>;
+
     /// Get the history dates for locations.
     ///
     /// # Arguments
     ///
-    /// - `criteria` identifies the locations.
+    /// - `filters` identifies the locations.
     ///
-    pub fn get_history_dates(&self, criteria: DataCriteria) -> Result<Vec<HistoryDates>> {
-        self.0.history_dates(criteria)
-    }
+    fn get_history_dates(&self, filters: LocationFilters) -> crate::Result<Vec<HistoryDates>>;
+
     /// Get a summary of location weather data.
     ///
     /// # Arguments
     ///
-    /// - `criteria` identifies the locations.
+    /// - `filters` identifies the locations.
     ///
-    pub fn get_history_summary(&self, criteria: DataCriteria) -> Result<Vec<HistorySummaries>> {
-        self.0.history_summaries(criteria)
-    }
+    fn get_history_summaries(&self, filters: LocationFilters) -> crate::Result<Vec<HistorySummaries>>;
+
     /// Get the weather location metadata.
     ///
     /// # Arguments
     ///
-    /// - `criteria` identifies the locations of interest.
+    /// - `filters` identifies the locations of interest.
     ///
-    pub fn get_locations(&self, criteria: DataCriteria) -> Result<Vec<Location>> {
-        self.0.locations(criteria)
-    }
-    pub fn add_location(&self, location: Location) -> Result<()> {
-        self.0.add_location(location)
-    }
+    fn get_locations(&self, filters: LocationFilters) -> crate::Result<Vec<Location>>;
+
+    /// Add a location.
+    ///
+    /// #Arguments
+    ///
+    /// * `location` is the location data.
+    ///
+    fn add_location(&self, location: Location) -> crate::Result<()>;
+
     /// Search for a location.
     ///
     /// # Arguments
     ///
     /// - `criteria` identifies the location search criteria.
     ///
-    pub fn search_locations(&self, criteria: LocationCriteria) -> Result<Vec<Location>> {
-        self.0.search(criteria)
-    }
-    /// Used internally to get a single location, error otherwise.
-    ///
-    /// # Arguments
-    ///
-    /// - `criteria` is the location being searched for.
-    ///
-    fn get_location(&self, criteria: &DataCriteria) -> Result<Location> {
-        let mut locations = self.get_locations(DataCriteria {
-            filters: criteria.filters.clone(),
-            icase: criteria.icase,
-            sort: criteria.sort,
-        })?;
-        match locations.len() {
-            1 => Ok(locations.pop().unwrap()),
-            0 => Err(Error::from("A location was not found.")),
-            _ => Err(Error::from("Multiple locations were found.")),
-        }
-    }
-}
-
-/// The `API` common to all the backend implementations.
-trait DataAdapter: Send {
-    /// Get the data adapter configuration.
-    ///
-    fn config(&self) -> &Config;
-    /// Add weather data history for a location.
-    ///
-    /// # Arguments
-    ///
-    /// - `histories` has the location and histories to add.
-    ///
-    fn add_daily_histories(&self, histories: &DailyHistories) -> Result<usize>;
-    /// Returns the daily weather data history for a location.
-    ///
-    /// # Arguments
-    ///
-    /// - `criteria` identifies what location should be used.
-    /// - `history_range` specifies the date range that should be used.
-    ///
-    fn daily_histories(&self, location: Location, date_range: DateRange) -> Result<DailyHistories>;
-    /// Get the weather history dates for locations.
-    ///
-    /// # Arguments
-    ///
-    /// - `criteria` identifies the locations.
-    ///
-    fn history_dates(&self, criteria: DataCriteria) -> Result<Vec<HistoryDates>>;
-    /// Get a summary of the weather history available for locations.
-    ///
-    /// # Arguments
-    ///
-    /// - `criteria` identifies the locations that should be used.
-    ///
-    fn history_summaries(&self, criteria: DataCriteria) -> Result<Vec<HistorySummaries>>;
-    /// Add a weather data location.
-    ///
-    /// # Arguments
-    ///
-    /// - `location` is the location that will be added.
-    ///
-    fn add_location(&self, location: Location) -> Result<()>;
-    /// Get the metadata for weather locations.
-    ///
-    /// # Arguments
-    ///
-    /// - `criteria` identifies the locations of interest.
-    ///
-    fn locations(&self, criteria: DataCriteria) -> Result<Vec<Location>>;
-    /// Search for locations.
-    ///
-    /// # Arguments
-    ///
-    /// - `criteria` is used to filter the locations search.
-    ///
-    fn search(&self, criteria: LocationCriteria) -> Result<Vec<Location>>;
+    fn search_locations(&self, criteria: LocationCriteria) -> crate::Result<Vec<Location>>;
 }
 
 #[cfg(test)]
@@ -262,11 +181,11 @@ mod testlib {
     }
 
     pub(in crate::backend) fn generate_random_string(len: usize) -> String {
-        let mut rand = rand::thread_rng();
+        let mut rand = rand::rng();
         const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmonopqrstuvwxyz0123456789";
         let random_string = (0..len)
             .map(|_| {
-                let idx = rand.gen_range(0..CHARS.len());
+                let idx = rand.random_range(0..CHARS.len());
                 CHARS[idx] as char
             })
             .collect();

@@ -107,7 +107,7 @@ impl ReportRow {
     /// - `text_style` is used to draw report text content.
     /// - `header_style` is used to draw report header content.
     ///
-    fn to_line<'l>(&'l self, page: &'l Page, (text_style, header_style): (Style, Style)) -> Line<'_> {
+    fn to_line<'l>(&'l self, page: &'l Page, (text_style, header_style): (Style, Style)) -> Line<'l> {
         let mut spans = vec![];
         let mut spans_len = 0u16;
         macro_rules! add_span {

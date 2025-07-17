@@ -1,6 +1,18 @@
 //! The dialog that adds a location.
 
-use super::*;
+use super::{alpha, alphanumeric, digits};
+use crossterm::event::KeyEvent;
+use ratatui::{
+    buffer::Buffer,
+    layout::{Position, Rect, Size},
+};
+use std::{ops::ControlFlow, rc::Rc};
+use termui_lib::prelude::{
+    beep, break_event, cancel_button, log_key_pressed, log_render, ok_button, ActiveNormalStyles, ButtonBar,
+    ButtonDialog, ControlGroup, ControlResult, DialogResult, DialogWindow, EditControl, EditField, EditFieldGroup,
+    Label, MessageStyle, TextEditor, CANCEL_BUTTON_ID, OK_BUTTON_ID,
+};
+use weather_lib::prelude::{Location, WeatherData};
 
 /// A dialog that add a location to weather data.
 pub struct AddLocation {
@@ -9,8 +21,8 @@ pub struct AddLocation {
     /// The weather history API that will be used.
     weather_data: Rc<WeatherData>,
 }
-impl Debug for AddLocation {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Debug for AddLocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AddLocation").field("dialog", &self.dialog).finish()
     }
 }
@@ -77,12 +89,12 @@ impl AddLocation {
             Ok(_) => match self.weather_data.add_location(location) {
                 Ok(_) => ControlFlow::Break(DialogResult::Exit)?,
                 Err(err) => {
-                    self.dialog.win_mut().fields.set_active(NAME_ID);
+                    let _ = self.dialog.win_mut().fields.set_active(CITY);
                     self.dialog.set_message(MessageStyle::Error, err);
                 }
             },
             Err((err, id)) => {
-                self.dialog.win_mut().fields.set_active(id);
+                let _ = self.dialog.win_mut().fields.set_active(id);
                 self.dialog.set_message(MessageStyle::Error, err);
             }
         }
@@ -90,25 +102,33 @@ impl AddLocation {
     }
 }
 
-/// The field identifier for the location name.
+/// The field identifier for the location city name.
 ///
-const NAME_ID: &'static str = "LOCATION";
+const CITY: &'static str = "City";
+
+/// The field identifier for the location state name.
+///
+const STATE: &'static str = "State";
+
+/// The field identifier for the location two-letter abbreviated state name.
+///
+const STATE_ID: &'static str = "State ID";
 
 /// The field identifier for the location alias.
 ///
-const ALIAS_ID: &'static str = "ALIAS";
-
-/// The field identifier for the location longitude.
-///
-const LONGITUDE_ID: &'static str = "LONGITUDE";
+const ALIAS: &'static str = "Alias";
 
 /// The field identifier for the location latitude.
 ///
-const LATITUDE_ID: &'static str = "LATITUDE";
+const LATITUDE: &'static str = "Latitude";
+
+/// The field identifier for the location longitude.
+///
+const LONGITUDE: &'static str = "Longitude";
 
 /// The field identifier for the location timezone.
 ///
-const TZ_ID: &'static str = "TZ";
+const TZ: &'static str = "Timezone";
 
 /// The location editor manages editing location information and is called from the [AddLocation].
 #[derive(Debug)]
@@ -122,30 +142,43 @@ impl LocationEditor {
     /// Create a new instance of the location information editor.
     fn new() -> Self {
         let ll_width = "-###.########".len() as u16;
+        macro_rules! label {
+            ($label:expr) => {
+                format!("{}: ", $label)
+            };
+        }
         Self {
             active: false,
             fields: EditFieldGroup::new(vec![
                 EditField::new(
-                    Label::align_right("Name: ").with_selector('N').with_id(NAME_ID).with_active(),
+                    Label::align_right(label!(CITY)).with_selector('C').with_id(CITY).with_active(),
                     TextEditor::default().with_width(40).with_valid_chars(alphanumeric().chain("_-., ".chars())),
                 ),
                 EditField::new(
-                    Label::align_right("Alias: ").with_selector('A').with_id(ALIAS_ID),
+                    Label::align_right(label!(STATE)).with_selector('S').with_id(STATE),
+                    TextEditor::default().with_width(25).with_valid_chars(alphanumeric().chain(" ".chars())),
+                ),
+                EditField::new(
+                    Label::align_right(label!(STATE_ID)).with_selector('I').with_id(STATE_ID),
+                    TextEditor::default().with_width(2).with_valid_chars(alpha()).with_uppercase_only(),
+                ),
+                EditField::new(
+                    Label::align_right(label!(ALIAS)).with_selector('A').with_id(ALIAS),
                     TextEditor::default()
                         .with_width(20)
                         .with_valid_chars(alphanumeric().chain("_".chars()))
                         .with_lowercase_only(),
                 ),
                 EditField::new(
-                    Label::align_right("Longitude: ").with_selector('g').with_id(LONGITUDE_ID),
+                    Label::align_right(label!(LATITUDE)).with_selector('t').with_id(LATITUDE),
                     TextEditor::default().with_width(ll_width).with_valid_chars(digits().chain("-.".chars())),
                 ),
                 EditField::new(
-                    Label::align_right("Latitude: ").with_selector('t').with_id(LATITUDE_ID),
+                    Label::align_right(label!(LONGITUDE)).with_selector('g').with_id(LONGITUDE),
                     TextEditor::default().with_width(ll_width).with_valid_chars(digits().chain("-.".chars())),
                 ),
                 EditField::new(
-                    Label::align_right("Timezone: ").with_selector('z').with_id(TZ_ID),
+                    Label::align_right(label!(TZ)).with_selector('z').with_id(TZ),
                     TextEditor::default().with_width(30).with_valid_chars(alpha().chain("/_".chars())),
                 ),
             ])
@@ -160,22 +193,29 @@ impl LocationEditor {
     /// - `location` is the location information that will be used.
     ///
     fn initialize(&mut self, location: &Location) {
-        self.fields.get_mut(NAME_ID).unwrap().set_text(&location.name);
-        self.fields.get_mut(ALIAS_ID).unwrap().set_text(&location.alias);
-        self.fields.get_mut(LONGITUDE_ID).unwrap().set_text(&location.longitude);
-        self.fields.get_mut(LATITUDE_ID).unwrap().set_text(&location.latitude);
-        self.fields.get_mut(TZ_ID).unwrap().set_text(&location.tz);
-        self.fields.set_active(ALIAS_ID);
+        self.fields.get_mut(CITY).unwrap().set_text(&location.city);
+        self.fields.get_mut(STATE).unwrap().set_text(&location.state);
+        self.fields.get_mut(STATE_ID).unwrap().set_text(&location.state_id);
+        self.fields.get_mut(ALIAS).unwrap().set_text(&location.alias);
+        self.fields.get_mut(LONGITUDE).unwrap().set_text(&location.longitude);
+        self.fields.get_mut(LATITUDE).unwrap().set_text(&location.latitude);
+        self.fields.get_mut(TZ).unwrap().set_text(&location.tz);
+        let _ = self.fields.set_active(ALIAS);
     }
     /// Converts the location field information into a [Location] instance.
     ///
     fn as_location(&self) -> Location {
+        let city = self.fields.get(CITY).map_or(Default::default(), |field| field.text().to_string());
+        let state_id = self.fields.get(STATE_ID).map_or(Default::default(), |field| field.text().to_string());
         Location {
-            name: self.fields.get(NAME_ID).map_or("", |field| field.text()).to_string(),
-            alias: self.fields.get(ALIAS_ID).map_or("", |field| field.text()).to_string(),
-            longitude: self.fields.get(LONGITUDE_ID).map_or("", |field| field.text()).to_string(),
-            latitude: self.fields.get(LATITUDE_ID).map_or("", |field| field.text()).to_string(),
-            tz: self.fields.get(TZ_ID).map_or("", |field| field.text()).to_string(),
+            name: format!("{}, {}", city, state_id),
+            city,
+            state: self.fields.get(STATE).map_or(Default::default(), |field| field.text().to_string()),
+            state_id,
+            alias: self.fields.get(ALIAS).map_or("", |field| field.text()).to_string(),
+            longitude: self.fields.get(LONGITUDE).map_or("", |field| field.text()).to_string(),
+            latitude: self.fields.get(LATITUDE).map_or("", |field| field.text()).to_string(),
+            tz: self.fields.get(TZ).map_or("", |field| field.text()).to_string(),
         }
     }
 }
@@ -236,7 +276,7 @@ impl DialogWindow for LocationEditor {
 }
 
 /// The result of a field validation.
-type ValidateResult = std::result::Result<(), (String, String)>;
+type ValidateResult = Result<(), (String, String)>;
 macro_rules! validate_error {
     ($msg:expr, $id:expr) => {
         Err(($msg.to_string(), $id.to_string()))
@@ -250,17 +290,21 @@ macro_rules! validate_error {
 /// - `location` is the location information that will be validated.
 ///
 fn validate(location: &Location) -> ValidateResult {
-    match location.name.is_empty() {
-        true => validate_error!("The location name cannot be empty.", NAME_ID),
-        false => match location.alias.is_empty() {
-            true => validate_error!("The alias name cannot be empty.", ALIAS_ID),
-            false => {
-                validate_longitude(&location.longitude)?;
-                validate_latitude(&location.latitude)?;
-                validate_tz(&location.tz)
-            }
-        },
+    if location.city.is_empty() {
+        validate_error!("The location city name cannot be empty", CITY)?;
     }
+    if location.state.is_empty() {
+        validate_error!("The location state name cannot be empty", STATE)?;
+    }
+    if location.state_id.is_empty() {
+        validate_error!("The location abbreviated state name cannot be empty", STATE_ID)?;
+    }
+    if location.alias.is_empty() {
+        validate_error!("The location alias cannot be empty", ALIAS)?;
+    }
+    validate_longitude(&location.longitude)?;
+    validate_latitude(&location.latitude)?;
+    validate_tz(&location.tz)
 }
 
 /// Validate a longitude value.
@@ -271,13 +315,13 @@ fn validate(location: &Location) -> ValidateResult {
 ///
 fn validate_longitude(longitude: &str) -> ValidateResult {
     match longitude.is_empty() {
-        true => validate_error!("Longitude cannot be empty.", LONGITUDE_ID),
+        true => validate_error!("Longitude cannot be empty.", LONGITUDE),
         false => match longitude.parse::<f64>() {
             Ok(longitude) => match longitude >= -180.0 && longitude <= 180.0 {
                 true => Ok(()),
-                false => validate_error!("Longitude must be between -180 and 180 degrees", LONGITUDE_ID),
+                false => validate_error!("Longitude must be between -180 and 180 degrees", LONGITUDE),
             },
-            Err(_) => validate_error!("Longitude needs to be expressed in degrees.", LONGITUDE_ID),
+            Err(_) => validate_error!("Longitude needs to be expressed in degrees.", LONGITUDE),
         },
     }
 }
@@ -290,13 +334,13 @@ fn validate_longitude(longitude: &str) -> ValidateResult {
 ///
 fn validate_latitude(latitude: &str) -> ValidateResult {
     match latitude.is_empty() {
-        true => validate_error!("Latitude cannot be empty.", LATITUDE_ID),
+        true => validate_error!("Latitude cannot be empty.", LATITUDE),
         false => match latitude.parse::<f64>() {
             Ok(latitude) => match latitude >= -90.0 && latitude <= 90.0 {
                 true => Ok(()),
-                false => validate_error!("Latitude must be between -90 and 90 degrees", LATITUDE_ID),
+                false => validate_error!("Latitude must be between -90 and 90 degrees", LATITUDE),
             },
-            Err(_) => validate_error!("Latitude needs to be expressed in degrees.", LATITUDE_ID),
+            Err(_) => validate_error!("Latitude needs to be expressed in degrees.", LATITUDE),
         },
     }
 }
@@ -309,10 +353,10 @@ fn validate_latitude(latitude: &str) -> ValidateResult {
 ///
 fn validate_tz(timezone: &str) -> ValidateResult {
     match timezone.is_empty() {
-        true => validate_error!("Timezone cannot be empty.", TZ_ID),
+        true => validate_error!("Timezone cannot be empty.", TZ),
         false => match chrono_tz::TZ_VARIANTS.iter().any(|tz| tz.name() == timezone) {
             true => Ok(()),
-            false => validate_error!("Timezone is not valid.", TZ_ID),
+            false => validate_error!("Timezone is not valid.", TZ),
         },
     }
 }

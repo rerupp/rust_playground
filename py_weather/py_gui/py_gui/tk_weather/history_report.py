@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from .infrastructure import Stopwatch, WeatherView
 from .widgets import (CellStyle, Column, DateRangeSelector, Pad, Row, Sheet)
 from ..config import get_logger
-from ..domain import DailyHistories, DataCriteria, DateRange, LocationHistoryDates, WeatherData
+from ..domain import DailyHistories, LocationFilter, LocationFilters, DateRange, LocationHistoryDates, WeatherData
 
 __all__ = ['HistoryReport']
 log = get_logger(__name__)
@@ -22,8 +22,8 @@ class HistoryReport(WeatherView):
         # get the report selection
         stopwatch = Stopwatch()
         # make sure there are histories to report
-        data_criteria = DataCriteria(filters=[self._location_alias])
-        location_history_dates = self._weather_data.get_history_dates(data_criteria)[0]
+        filters = LocationFilters([LocationFilter(name=self._location_alias)])
+        location_history_dates = self._weather_data.get_history_dates(filters)[0]
         history_dates_t = str(stopwatch)
         self._is_cancelled = True
         if not location_history_dates.history_dates:
@@ -39,8 +39,8 @@ class HistoryReport(WeatherView):
             self._sheet = None
         else:
             stopwatch.restart()
-            data_criteria = DataCriteria(filters=[self._location_alias])
-            daily_histories = self._weather_data.get_daily_history(data_criteria, report_selection.date_range)
+            filters = LocationFilter(name=self._location_alias)
+            daily_histories = self._weather_data.get_daily_history(filters, report_selection.date_range)
             headings = _create_headings(report_selection)
             contents = _create_contents(daily_histories, report_selection)
             self._sheet = Sheet(parent, headings, contents, view_labeled=True)
@@ -258,12 +258,13 @@ def _create_contents(daily_histories: DailyHistories, report_selection: ReportSe
 __bearings = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW']
 
 
-def __wind_bearing(bearing: Optional[float] = None) -> str:
+def __wind_bearing(bearing: Optional[float] = None) -> str | None:
     if bearing is not None:
         return __bearings[round(bearing / 22.5) % 16]
+    return None
 
 
-def __uv_index(index: Optional[float] = None) -> str:
+def __uv_index(index: Optional[float] = None) -> str | None:
     if index is not None:
         index = int(index)
         if 0 <= index <= 2:
@@ -276,9 +277,10 @@ def __uv_index(index: Optional[float] = None) -> str:
             return 'very high'
         if index > 10:
             return 'extreme'
+    return None
 
 
-def __moon_phase(phase: Optional[float] = None) -> str:
+def __moon_phase(phase: Optional[float] = None) -> str | None:
     if phase is not None:
         if 0.0 <= phase <= 0.01:
             return 'new moon'
@@ -297,6 +299,7 @@ def __moon_phase(phase: Optional[float] = None) -> str:
         if 0.76 < phase <= 1.0:
             return 'waning crescent'
         return '?'
+    return None
 
 
 def __daylight_hours(sunrise: datetime, sunset: datetime) -> str:

@@ -1,6 +1,15 @@
 //! The HTTP client that calls the Visual Crossing endpoint.
-use super::*;
-use std::{cell::RefCell, sync::Arc, thread::{spawn, JoinHandle}};
+use reqwest::{
+    // use the blocking API since the rest client is async.
+    blocking::{Client, Request, RequestBuilder},
+    StatusCode,
+    Url,
+};
+use std::{
+    cell::RefCell,
+    sync::Arc,
+    thread::{spawn, JoinHandle},
+};
 
 /// The result of a request made by the Rest client.
 ///
@@ -22,7 +31,7 @@ pub enum RestClientResult {
 /// The handle to the underlying thread join handle.
 ///
 pub struct RestClientHandle {
-    /// The underlying thread join hand and result.
+    /// The underlying thread join handle and result.
     client_handle: RefCell<Option<JoinHandle<RestClientResult>>>,
 }
 impl RestClientHandle {

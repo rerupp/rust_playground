@@ -17,7 +17,7 @@ impl Drop for ElapsedTimer {
         let ms = self.stopwatch.elapsed().as_millis();
         match ms == 0 {
             true => log::debug!("{} exit duration {}us", self.banner, self.stopwatch.elapsed().as_micros()),
-            false => log::debug!("{} exit duration {}ms", self.banner, commafy(self.stopwatch.elapsed().as_millis()))
+            false => log::debug!("{} exit duration {}ms", self.banner, commafy(self.stopwatch.elapsed().as_millis())),
         }
     }
 }
@@ -57,11 +57,7 @@ pub fn create(init: PyWeatherConfig) -> PyResult<PyWeatherData> {
             logfile_pattern: None,
             logfile_path: init.logfile,
             logfile_append: init.log_append,
-            file_loggers: vec![
-                "toolslib".to_string(),
-                "weather_lib".to_string(),
-                "py_weather_lib".to_string(),
-            ],
+            file_loggers: vec!["toolslib".to_string(), "weather_lib".to_string(), "py_weather_lib".to_string()],
         };
         match logs::initialize(log_properties) {
             Ok(_) => LOG_INITIALIZED.set(true).unwrap(),
@@ -108,16 +104,16 @@ impl PyWeatherData {
     ///
     /// # Arguments
     ///
-    /// * `criteria` identifies the location.
+    /// * `filter` identifies the location.
     /// * `history_range` covers the history dates returned.
     ///
     pub fn get_daily_history(
         &self,
-        criteria: PyDataCriteria,
+        filter: PyLocationFilter,
         history_range: PyDateRange,
     ) -> PyResult<PyDailyHistories> {
         elapsed_timer!("get_daily_history");
-        match self.0.get_daily_history(criteria.into(), history_range.into()) {
+        match self.0.get_daily_history(filter.into(), history_range.into()) {
             Ok(daily_histories) => Ok(daily_histories.into()),
             Err(error) => system_err!(error),
         }
@@ -126,11 +122,11 @@ impl PyWeatherData {
     ///
     /// # Arguments
     ///
-    /// * `criteria` identifies the locations.
+    /// * `filters` identifies the locations.
     ///
-    pub fn get_history_dates(&self, criteria: PyDataCriteria) -> PyResult<Vec<PyLocationHistoryDates>> {
+    pub fn get_history_dates(&self, filters: PyLocationFilters) -> PyResult<Vec<PyLocationHistoryDates>> {
         elapsed_timer!("get_history_dates");
-        match self.0.get_history_dates(criteria.into()) {
+        match self.0.get_history_dates(filters.into()) {
             Ok(history_dates) => Ok(history_dates.into_iter().map(Into::into).collect()),
             Err(error) => system_err!(error),
         }
@@ -139,11 +135,11 @@ impl PyWeatherData {
     ///
     /// # Arguments
     ///
-    /// * `criteria` identifies the locations.
+    /// * `filters` identifies the locations.
     ///
-    pub fn get_history_summary(&self, criteria: PyDataCriteria) -> PyResult<Vec<PyHistorySummaries>> {
+    pub fn get_history_summary(&self, filters: PyLocationFilters) -> PyResult<Vec<PyHistorySummaries>> {
         elapsed_timer!("get_history_summary");
-        match self.0.get_history_summary(criteria.into()) {
+        match self.0.get_history_summary(filters.into()) {
             Ok(history_summary) => Ok(history_summary.into_iter().map(Into::into).collect()),
             Err(error) => system_err!(error),
         }
@@ -152,11 +148,11 @@ impl PyWeatherData {
     ///
     /// # Arguments
     ///
-    /// * `criteria` identifies the locations of interest.
+    /// * `filters` identifies the locations of interest.
     ///
-    pub fn get_locations(&self, criteria: PyDataCriteria) -> PyResult<Vec<PyLocation>> {
+    pub fn get_locations(&self, filters: PyLocationFilters) -> PyResult<Vec<PyLocation>> {
         elapsed_timer!("get_locations");
-        match self.0.get_locations(criteria.into()) {
+        match self.0.get_locations(filters.into()) {
             Ok(locations) => Ok(locations.into_iter().map(Into::into).collect()),
             Err(error) => system_err!(error),
         }

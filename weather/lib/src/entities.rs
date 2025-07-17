@@ -2,28 +2,6 @@
 
 use chrono::{NaiveDate, NaiveDateTime};
 
-/// Used by front-ends to identify locations.
-#[derive(Debug)]
-pub struct DataCriteria {
-    /// The locations of interest.
-    pub filters: Vec<String>,
-    /// If `true` the location filters will ignore case.
-    pub icase: bool,
-    /// If `true` locations will be sorted by name.
-    pub sort: bool,
-}
-impl DataCriteria {
-    pub fn filters(mut self, filters: Vec<String>) -> Self {
-        self.filters = filters;
-        self
-    }
-}
-impl Default for DataCriteria {
-    fn default() -> Self {
-        Self { filters: Default::default(), icase: true, sort: true }
-    }
-}
-
 /// A locations daily weather history.
 #[derive(Debug)]
 pub struct DailyHistories {
@@ -59,16 +37,165 @@ pub struct HistorySummaries {
 /// The data that comprises a location.
 #[derive(Clone, Debug)]
 pub struct Location {
+    /// The name of the city.
+    pub city: String,
+    /// The short state name.
+    pub state_id: String,
+    /// The full state name.
+    pub state: String,
     /// The name of a location.
     pub name: String,
     /// A unique nickname of a location.
     pub alias: String,
-    /// The location longitude.
-    pub longitude: String,
     /// The location latitude.
     pub latitude: String,
+    /// The location longitude.
+    pub longitude: String,
     /// the location timezone.
     pub tz: String,
+}
+
+/// The data that identifies selection of a location or locations.
+#[derive(Debug)]
+pub struct LocationFilter {
+    /// A location can be searched by the city name.
+    pub city: Option<String>,
+
+    /// A location can be searched by the state name (full or two-letter form).
+    pub state: Option<String>,
+
+    /// A location can be searched for by its name or alias.
+    pub name: Option<String>,
+}
+impl Default for LocationFilter {
+    fn default() -> Self {
+        Self { city: None, state: None, name: None }
+    }
+}
+impl LocationFilter {
+    /// A builder method that adds a city name to the filter.
+    ///
+    /// # Arguments
+    ///
+    /// * `city` is the name of the city.
+    ///
+    pub fn with_city(mut self, city: &str) -> Self {
+        self.city.replace(String::from(city));
+        self
+    }
+
+    /// A builder method that adds a state name to the filter.
+    ///
+    /// # Arguments
+    ///
+    /// * `state` is the name of the state.
+    ///
+    pub fn with_state(mut self, state: &str) -> Self {
+        self.state.replace(String::from(state));
+        self
+    }
+
+    /// A builder method that adds a location name to the filter.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` is the name of the location.
+    ///
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name.replace(String::from(name));
+        self
+    }
+
+    /// Returns true if the city, state, and name are NONE.
+    ///
+    pub fn is_none(&self) -> bool {
+        self.city.is_none() && self.state.is_none() && self.name.is_none()
+    }
+}
+
+/// The location filter macro provides a simple front end to the [LocationFilter] builder.
+///
+#[macro_export]
+macro_rules! location_filter {
+    (city=$city:expr, state=$state:expr) => {
+        $crate::prelude::LocationFilter::default().with_city($city).with_state($state)
+    };
+    (city=$city:expr) => {
+        $crate::prelude::LocationFilter::default().with_city($city)
+    };
+    (state=$state:expr) => {
+        $crate::prelude::LocationFilter::default().with_state($state)
+    };
+    (name=$name:expr) => {
+        $crate::prelude::LocationFilter::default().with_name($name)
+    };
+    () => {
+        $crate::prelude::LocationFilter::default()
+    };
+}
+
+/// The collection of location filters. Originally this was defined as a type but having
+/// a concrete class helps a bit with the Python library.
+///
+pub struct LocationFilters(
+    /// The collection of location filters.
+    Vec<LocationFilter>,
+);
+impl Default for LocationFilters {
+    /// The default will have an empty collection of filters.
+    fn default() -> Self {
+        Self(vec![])
+    }
+}
+impl IntoIterator for LocationFilters {
+    type Item = LocationFilter;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+    /// Return the collection of filters as an iterator.
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+impl LocationFilters {
+    /// Create a new instance of the filters.
+    ///
+    /// # Arguments
+    ///
+    /// * `filters` is the collection of location filters.
+    ///
+    pub fn new(filters: Vec<LocationFilter>) -> Self {
+        Self(filters)
+    }
+
+    /// This will return true if there are no filters available.
+    ///
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Return an iterator over the filter collection.
+    ///
+    pub fn iter(&self) -> std::slice::Iter<LocationFilter> {
+        self.0.iter()
+    }
+
+    /// Return a mutable iterator over the filter collection.
+    ///
+    pub fn iter_mut(&mut self) -> std::slice::IterMut<LocationFilter> {
+        self.0.iter_mut()
+    }
+}
+
+/// The location filters macro provides a front-end to creating a location filters instance.
+///
+#[macro_export]
+macro_rules! location_filters {
+    () => {
+        $crate::prelude::LocationFilters::default()
+    };
+    // lets this macro act like the vec! macro
+    ($($x:expr),+ $(,)?) => {
+        $crate::prelude::LocationFilters::new(vec![$($x),+])
+    }
 }
 
 /// A locations history summary.
@@ -87,7 +214,7 @@ pub struct HistorySummary {
 }
 
 /// The weather history data.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct History {
     /// The location alias name.
     pub alias: String,
@@ -150,13 +277,35 @@ pub struct DateRanges {
     pub date_ranges: Vec<DateRange>,
 }
 impl DateRanges {
+    pub fn new(location_id: &str, mut dates: Vec<NaiveDate>) -> Self {
+        dates.sort_unstable();
+        let mut ranges = vec![];
+        let dates_len = dates.len();
+        if dates_len == 1 {
+            ranges.push(DateRange::new(dates[0], dates[0]));
+        } else if dates_len > 1 {
+            let mut from = dates[0];
+            let mut to = dates[0];
+            for i in 1..dates_len {
+                if next_day!(to) != dates[i] {
+                    ranges.push(DateRange::new(from, to));
+                    from = dates[i];
+                    to = dates[i];
+                } else {
+                    to = dates[i];
+                }
+            }
+            ranges.push(DateRange::new(from, to));
+        }
+        Self { location_id: location_id.to_string(), date_ranges: ranges }
+    }
     pub fn covers(&self, date: &NaiveDate) -> bool {
         self.date_ranges.iter().any(|date_range| date_range.covers(date))
     }
 }
 
 /// A container for a range of dates.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct DateRange {
     /// The starting date of the range.
     pub start: NaiveDate,
@@ -193,47 +342,6 @@ impl DateRange {
     pub fn as_iso8601(&self) -> (String, String) {
         use toolslib::date_time::isodate;
         (isodate(&self.start), isodate(&self.end))
-    }
-    /// A helper that builds a list of history range from a list of dates.
-    ///
-    /// As an example, if the following date list was passed to the function:
-    ///
-    /// * 2022-08-12
-    /// * 2022-08-10
-    /// * 2022-08-14
-    ///
-    /// The resulting list of date ranges would be returned.
-    ///
-    /// * (2022-08-10, 2022-08-10)
-    /// * (2022-08-12, 2022-08-14)
-    ///
-    /// # Arguments
-    ///
-    /// * `dates` - The list of dates that will be converted to date ranges.
-    ///
-    pub fn from_dates(mut dates: Vec<NaiveDate>) -> Vec<DateRange> {
-        // let mut dates = dates.clone();
-        // dates.sort_by(|lhs, rhs| lhs.cmp(rhs));
-        dates.sort_unstable();
-        let mut history_ranges = vec![];
-        let dates_len = dates.len();
-        if dates_len == 1 {
-            history_ranges.push(DateRange::new(dates[0], dates[0]));
-        } else if dates_len > 1 {
-            let mut from = dates[0];
-            let mut to = dates[0];
-            for i in 1..dates_len {
-                if next_day!(to) != dates[i] {
-                    history_ranges.push(DateRange::new(from, to));
-                    from = dates[i];
-                    to = dates[i];
-                } else {
-                    to = dates[i];
-                }
-            }
-            history_ranges.push(DateRange::new(from, to));
-        }
-        history_ranges
     }
 }
 /// Create an iterator that will return all dates within the range.
@@ -283,12 +391,24 @@ impl Iterator for DateRangeIterator {
 /// The search criteria for locations.
 #[derive(Debug)]
 pub struct LocationCriteria {
-    /// The optional city name.
-    pub name: Option<String>,
-    /// The optional state name.
-    pub state: Option<String>,
+    /// The location criteria filter.
+    pub filter: LocationFilter,
+
     /// Used to limit the result of the query.
     pub limit: usize,
+}
+impl Default for LocationCriteria {
+    fn default() -> Self {
+        Self::new(None, None, None, None)
+    }
+}
+impl LocationCriteria {
+    pub fn new(city: Option<String>, state: Option<String>, name: Option<String>, limit: Option<usize>) -> Self {
+        Self { filter: LocationFilter { city, state, name }, limit: limit.unwrap_or(usize::MAX) }
+    }
+    pub fn include_all(&self) -> bool {
+        self.filter.is_none()
+    }
 }
 
 #[cfg(test)]
@@ -310,23 +430,6 @@ mod tests {
     }
 
     #[test]
-    pub fn empty_history_range() {
-        assert!(DateRange::from_dates(vec![]).is_empty());
-    }
-
-    #[test]
-    pub fn single_history_range() {
-        let test_date = get_date(2022, 7, 6);
-        let testcase = DateRange::from_dates(vec![test_date]);
-        assert_eq!(testcase.len(), 1);
-        assert!(testcase[0].is_one_day());
-        assert_eq!(test_date, testcase[0].start);
-        assert_eq!(test_date, testcase[0].end);
-        let (from, to) = testcase[0].as_iso8601();
-        assert_eq!(from, to);
-    }
-
-    #[test]
     fn is_within() {
         let testcase = DateRange::new(get_date(2023, 7, 1), get_date(2023, 7, 31));
         assert!(testcase.covers(&get_date(2023, 7, 1)));
@@ -336,21 +439,102 @@ mod tests {
     }
 
     #[test]
-    pub fn multiple_history_range() {
-        let test_dates = vec![get_date(2022, 7, 3), get_date(2022, 6, 30), get_date(2022, 7, 4), get_date(2022, 7, 1)];
-        let test_case = DateRange::from_dates(test_dates.clone());
-        assert_eq!(test_case.len(), 2);
-        assert_eq!(test_dates[1], test_case[0].start);
-        assert_eq!(test_dates[3], test_case[0].end);
-        assert_eq!(test_dates[0], test_case[1].start);
-        assert_eq!(test_dates[2], test_case[1].end);
-    }
-
-    #[test]
     pub fn to_iso8601_history_range() {
         let test_case = DateRange::new(get_date(2022, 7, 1), get_date(2022, 7, 2));
         let (from, to) = test_case.as_iso8601();
         assert_eq!(from, "2022-07-01");
         assert_eq!(to, "2022-07-02");
+    }
+
+    #[test]
+    pub fn date_ranges() {
+        let testcase = DateRanges::new(
+            "test",
+            vec![
+                get_date(2025, 5, 1),
+                get_date(2025, 5, 3),
+                get_date(2025, 5, 4),
+                get_date(2025, 5, 6),
+                get_date(2025, 5, 8),
+                get_date(2025, 5, 9),
+            ],
+        );
+        assert_eq!(testcase.location_id, "test");
+        assert_eq!(testcase.date_ranges.len(), 4);
+        assert_eq!(testcase.date_ranges[0], DateRange::new(get_date(2025, 5, 1), get_date(2025, 5, 1)));
+        assert_eq!(testcase.date_ranges[1], DateRange::new(get_date(2025, 5, 3), get_date(2025, 5, 4)));
+        assert_eq!(testcase.date_ranges[2], DateRange::new(get_date(2025, 5, 6), get_date(2025, 5, 6)));
+        assert_eq!(testcase.date_ranges[3], DateRange::new(get_date(2025, 5, 8), get_date(2025, 5, 9)));
+    }
+
+    #[test]
+    pub fn location_criteria() {
+        let default = LocationCriteria::default();
+        assert!(default.filter.is_none());
+        assert!(default.include_all());
+        assert_eq!(default.limit, usize::MAX);
+
+        let empty = LocationCriteria::new(None, None, None, None);
+        assert!(empty.filter.is_none());
+        assert!(empty.include_all());
+        assert_eq!(empty.limit, usize::MAX);
+
+        let city = "City".to_string();
+        let state = "State".to_string();
+        let name = "Name".to_string();
+        let full = LocationCriteria::new(Some(city.clone()), Some(state.clone()), Some(name.clone()), Some(250));
+        assert!(!full.include_all());
+        assert_eq!(full.filter.city, Some(city));
+        assert_eq!(full.filter.state, Some(state));
+        assert_eq!(full.filter.name, Some(name));
+        assert_eq!(full.limit, 250);
+    }
+
+    #[test]
+    pub fn location_filter() {
+        let testcase = LocationFilter::default();
+        assert!(testcase.is_none());
+
+        let testcase = LocationFilter::default().with_city("city");
+        assert!(!testcase.is_none());
+        assert_eq!(testcase.city.unwrap(), "city");
+        assert!(testcase.state.is_none());
+        assert!(testcase.name.is_none());
+
+        let testcase = LocationFilter::default().with_state("state");
+        assert!(!testcase.is_none());
+        assert!(testcase.city.is_none());
+        assert_eq!(testcase.state.unwrap(), "state");
+        assert!(testcase.name.is_none());
+
+        let testcase = LocationFilter::default().with_name("name");
+        assert!(!testcase.is_none());
+        assert!(testcase.city.is_none());
+        assert!(testcase.state.is_none());
+        assert_eq!(testcase.name.unwrap(), "name");
+    }
+
+    #[test]
+    fn location_filter_macro() {
+        let testcase = location_filter!();
+        assert!(testcase.is_none());
+
+        let testcase = location_filter!(city = "City");
+        assert!(!testcase.is_none());
+        assert_eq!(testcase.city.unwrap(), "City");
+        assert!(testcase.state.is_none());
+        assert!(testcase.name.is_none());
+
+        let testcase = location_filter!(state = "State");
+        assert!(!testcase.is_none());
+        assert!(testcase.city.is_none());
+        assert_eq!(testcase.state.unwrap(), "State");
+        assert!(testcase.name.is_none());
+
+        let testcase = location_filter!(name = "Name");
+        assert!(!testcase.is_none());
+        assert!(testcase.city.is_none());
+        assert!(testcase.state.is_none());
+        assert_eq!(testcase.name.unwrap(), "Name");
     }
 }

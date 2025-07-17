@@ -158,7 +158,8 @@ class HistoriesDates(WeatherView):
         if not selection.date_ranges_idx:
             date_range = location_history_dates.history_dates[-1]
         else:
-            date_range = selection.date_ranges_idx[0]
+            # date_range = selection.date_ranges_idx[0]
+            date_range = location_history_dates.history_dates[selection.date_ranges_idx[0]]
 
         history_report = HistoryReport(self._parent, location_history_dates.location.alias, self._weather_data,
                                        date_range)

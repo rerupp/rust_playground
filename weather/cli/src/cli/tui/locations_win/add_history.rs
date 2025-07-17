@@ -1,8 +1,18 @@
 //! The dialog that adds history to a location.
 
-use super::*;
-use std::cell::RefCell;
-use weather_lib::prelude::{DateRange, HistoryClient};
+use crate::cli::{self, tui::validate_date};
+use crossterm::event::KeyEvent;
+use ratatui::{
+    buffer::Buffer,
+    layout::{Position, Rect, Size},
+};
+use std::{cell::RefCell, ops::ControlFlow, rc::Rc};
+use termui_lib::prelude::{
+    beep, break_event, log_key_pressed, log_render, ok_button, ActiveNormalStyles, ButtonBar, ButtonDialog,
+    ControlGroup, ControlResult, DateEditor, DialogResult, DialogWindow, EditControl, EditField, EditFieldGroup, Label,
+    MessageStyle, ProgressDialog,
+};
+use weather_lib::prelude::{DateRange, HistoryClient, Location, WeatherData};
 
 /// The dialog that manages adding weather data history to a location.
 ///
@@ -18,9 +28,9 @@ pub struct AddHistory {
     /// The weather data history API that will be used.
     weather_data: Rc<WeatherData>,
 }
-impl Debug for AddHistory {
+impl std::fmt::Debug for AddHistory {
     /// Show all the attributes except the weather data API.
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AddHistory")
             .field("Location", &self.location)
             .field("history_criteria", &self.history_criteria)
@@ -36,7 +46,7 @@ impl AddHistory {
     /// - `location` allows the name and alias to be mined.
     /// - `weather_data` is the weather history API that will be used.
     ///
-    pub fn new(location: &Location, weather_data: Rc<WeatherData>) -> Result<Self> {
+    pub fn new(location: &Location, weather_data: Rc<WeatherData>) -> cli::Result<Self> {
         let buttons = ButtonBar::new(vec![ok_button().with_active()]).with_auto_select(true);
         Ok(Self {
             location: location.clone(),
@@ -143,7 +153,7 @@ impl AddHistory {
     }
 }
 
-/// The field identifier for the from date.
+/// The field identifier for the 'from' date.
 ///
 const FROM_ID: &'static str = "FROM";
 
@@ -179,15 +189,15 @@ impl HistoryCriteria {
     }
     /// Get the history date range or return an error if there are problems.
     ///
-    fn try_as_date_range(&mut self) -> std::result::Result<DateRange, String> {
+    fn try_as_date_range(&mut self) -> Result<DateRange, String> {
         match validate_date("From", self.date_fields.get_mut(FROM_ID).unwrap().text()) {
             Err(parse_error) => {
-                self.date_fields.set_active(FROM_ID);
+                let _ = self.date_fields.set_active(FROM_ID);
                 Err(parse_error)
             }
             Ok(from) => match validate_date("Through", self.date_fields.get(THRU_ID).unwrap().text()) {
                 Err(parse_error) => {
-                    self.date_fields.set_active(THRU_ID);
+                    let _ = self.date_fields.set_active(THRU_ID);
                     Err(parse_error)
                 }
                 Ok(thru) => match from <= thru {

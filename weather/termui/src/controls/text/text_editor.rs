@@ -267,6 +267,8 @@ impl FieldEditor for TextEditor {
             (KeyModifiers::CONTROL, KeyCode::Right) => self.move_to_end(),
             (KeyModifiers::CONTROL, KeyCode::Backspace) => self.delete_all_left(),
             (KeyModifiers::CONTROL, KeyCode::Delete) => self.delete_all_right(),
+            (KeyModifiers::NONE, KeyCode::Home) => self.move_to_front(),
+            (KeyModifiers::NONE, KeyCode::End) => self.move_to_end(),
             (KeyModifiers::NONE, KeyCode::Left) => self.move_left(),
             (KeyModifiers::NONE, KeyCode::Right) => self.move_right(),
             (KeyModifiers::NONE, KeyCode::Backspace) => self.delete_left(),
